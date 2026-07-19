@@ -34,6 +34,29 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def resolve_parquet_data_root(data_dir: str | Path) -> Path:
+    """
+    AutoBrep expects ``{root}/train|val|test/*.parquet``.
+
+    exp_launcher often passes the datasplit parent
+    ``.../ABC-1M/processed``; parquet splits live one level up.
+    """
+    root = Path(data_dir).resolve()
+    if (root / "train").is_dir() and (root / "val").is_dir():
+        return root
+    parent = root.parent
+    if (parent / "train").is_dir() and (parent / "val").is_dir():
+        print(
+            f"[train_pc] data-dir={root} has no train/val; using parent {parent}",
+            file=sys.stderr,
+        )
+        return parent
+    raise FileNotFoundError(
+        f"Cannot find train/val parquet under {root} or {parent}. "
+        "Expected ABC-1M layout with train/ val/ test/."
+    )
+
+
 def main() -> int:
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
@@ -50,12 +73,14 @@ def main() -> int:
 
     weight = Path(args.weight_folder)
     config = Path(args.config) if args.config else repo / "configs" / "autobrep_pc.yaml"
+    data_root = resolve_parquet_data_root(args.data_dir)
 
     meta = {
         "mode": "train",
         "dataset": args.dataset,
         "task": args.task,
         "data_dir": args.data_dir,
+        "data_root": str(data_root),
         "weight_folder": str(weight),
         "batch_size": args.batch_size,
         "max_epochs": args.max_epochs,
@@ -79,7 +104,7 @@ def main() -> int:
 
     # Apply CLI overrides onto yaml dict
     data_args = cfg["data"]["init_args"]
-    data_args["data_root"] = args.data_dir
+    data_args["data_root"] = str(data_root)
     data_args["batch_size"] = args.batch_size
     data_args["limit_train"] = args.limit_train
     data_args["limit_val"] = args.limit_val
@@ -128,7 +153,7 @@ def main() -> int:
     trainer = Trainer(**trainer_cfg)
     ckpt_path = args.resume_from or None
     print(
-        f"[train_pc] fit data={args.data_dir} batch={args.batch_size} "
+        f"[train_pc] fit data_root={data_root} batch={args.batch_size} "
         f"epochs={args.max_epochs} → {ckpt_dir}",
         file=sys.stderr,
     )
