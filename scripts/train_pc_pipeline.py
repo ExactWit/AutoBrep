@@ -57,9 +57,33 @@ def resolve_parquet_data_root(data_dir: str | Path) -> Path:
     )
 
 
+def _require_cuda(gpu: str) -> None:
+    # Must set before importing torch.
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            f"CUDA unavailable after CUDA_VISIBLE_DEVICES={gpu!r}. "
+            "Refusing to train on CPU."
+        )
+    torch.set_float32_matmul_precision("high")
+    print(
+        f"[train_pc] CUDA ok: device={torch.cuda.get_device_name(0)} "
+        f"visible={os.environ.get('CUDA_VISIBLE_DEVICES')}",
+        file=sys.stderr,
+    )
+
+
 def main() -> int:
     args = parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    _require_cuda(args.gpu)
+
+    import torch
+    from pytorch_lightning import Trainer, Callback
+    from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+    from pytorch_lightning.loggers import TensorBoardLogger
+    import yaml
 
     repo = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo / "core" / "src"))
@@ -89,15 +113,12 @@ def main() -> int:
         "pc_num_points": args.pc_num_points,
         "pc_num_latents": args.pc_num_latents,
         "freeze_backbone": True,
+        "gpu": args.gpu,
+        "cuda_device": torch.cuda.get_device_name(0),
     }
     (metrics_dir / "train_config.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-
-    from pytorch_lightning import Trainer
-    from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-    from pytorch_lightning.loggers import TensorBoardLogger
-    import yaml
 
     with open(config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -124,7 +145,38 @@ def main() -> int:
     from autobrep.models.autoregressive import AutoBrepPCModel
 
     datamodule = ARDataModule(**data_args)
+    print("[train_pc] constructing model (load ckpt → then move to CUDA)...", file=sys.stderr)
     model = AutoBrepPCModel(**model_args)
+    # Move early so nvidia-smi shows VRAM during the rest of setup.
+    model = model.cuda()
+    print(
+        f"[train_pc] model on {next(model.parameters()).device}, "
+        f"allocated={torch.cuda.memory_allocated()/1e9:.2f}GB",
+        file=sys.stderr,
+    )
+
+    class _CudaWatch(Callback):
+        def on_train_start(self, trainer, pl_module):
+            dev = next(pl_module.parameters()).device
+            if dev.type != "cuda":
+                raise RuntimeError(f"Training on {dev}, expected CUDA")
+            print(
+                f"[train_pc] on_train_start device={dev} "
+                f"allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+                f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            if batch_idx == 0 or (batch_idx + 1) % 50 == 0:
+                print(
+                    f"[train_pc] step={batch_idx} "
+                    f"alloc={torch.cuda.memory_allocated()/1e9:.2f}GB "
+                    f"peak={torch.cuda.max_memory_allocated()/1e9:.2f}GB",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     ckpt_cb = ModelCheckpoint(
         dirpath=str(ckpt_dir),
@@ -139,11 +191,17 @@ def main() -> int:
     trainer_cfg = dict(cfg.get("trainer") or {})
     trainer_cfg.update(
         {
+            "accelerator": "gpu",
+            "devices": [0],  # index inside CUDA_VISIBLE_DEVICES
             "max_epochs": args.max_epochs,
             "accumulate_grad_batches": args.accumulate_grad_batches,
             "default_root_dir": str(exp_dir),
             "logger": logger,
-            "callbacks": [ckpt_cb, LearningRateMonitor(logging_interval="step")],
+            "callbacks": [
+                ckpt_cb,
+                LearningRateMonitor(logging_interval="step"),
+                _CudaWatch(),
+            ],
         }
     )
     # Remove keys Lightning Trainer may not accept from yaml leftovers
@@ -165,6 +223,7 @@ def main() -> int:
         if ckpt_cb.best_model_score is not None
         else None,
         "last_model_path": str(ckpt_dir / "last.ckpt"),
+        "peak_cuda_GB": round(torch.cuda.max_memory_allocated() / 1e9, 3),
     }
     (metrics_dir / "train_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
