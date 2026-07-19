@@ -26,13 +26,18 @@
 
 ## 4090D（24GB）能否训
 
-| 设置 | 预期 |
-|------|------|
-| 冻骨干 + 只训 PC 头 | **可以**，建议 `batch_size=1`，`accumulate_grad_batches=4`，`bf16-mixed` |
-| 激活 | 仍要过完整 16 层算对 prefix 的梯度，**激活显存是大头**（seq=3000 时约数 GB～十余 GB） |
-| 建议 | 先 `scripts/probe_pc_vram.py`；若 OOM 把 `max_seq` 降到 2048 或加 gradient checkpointing |
+实测 `scripts/probe_pc_vram.py`（冻骨干 + prepend CE backward，**未含** FSQ encode）：
 
-可训参数量：PC encoder（hidden=256, latents=64）约 **~2–5M**，优化器状态可忽略。
+| seq_len | peak allocated |
+|---------|----------------|
+| 512 | **~7.0 GB** |
+| 1536 | **~8.6 GB** |
+
+线性外推 seq=3000 大约 **~11 GB** 量级；加上真实 `common_step` 里 FSQ encode（no_grad）与 DataLoader 开销，预期 **14–18 GB**，单卡 4090D **能跑**。
+
+建议：`batch_size=1`，`accumulate_grad_batches=4`，`bf16-mixed`。若 OOM 再降 `max_seq` 或开 checkpointing。
+
+可训参数：PC encoder **~5.7M**（总参数 ~1023M，冻结 ~1018M）。
 
 ## launcher
 
