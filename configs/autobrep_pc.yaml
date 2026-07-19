@@ -1,0 +1,59 @@
+seed_everything: True
+data:
+  class_path: autobrep.data.abc_data.ARDataModule
+  init_args:
+    data_root: /data/hdd/datasets/ABC-1M
+    batch_size: 1
+    limit_train: 50000
+    limit_val: 500
+    prefetch_batches: 1
+    materialize: False
+    min_face: 2
+    max_face: 200
+    max_edge: 1000
+    max_seq: 3000
+    bit: 10
+    load_geom: False
+    geom_ratio: 0.0
+    geom_tokenizer: constraint
+    load_meta: True
+    meta_ratio: 0.8
+    load_point_cloud: True
+    pc_num_points: 2048
+    aug: True
+    uv_invariant: True
+    scaled_unique: True
+    surf_codebook_size: 1024
+    edge_codebook_size: 1024
+    num_workers: 2
+    pin_memory: True
+trainer:
+  accelerator: gpu
+  devices: 1
+  strategy: auto
+  log_every_n_steps: 10
+  max_epochs: 5
+  check_val_every_n_epoch: 1
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 4
+model:
+  class_path: autobrep.models.autoregressive.AutoBrepPCModel
+  init_args:
+    max_face: 200
+    max_seq: 3000
+    bit: 10
+    surf_codebook_size: 1024
+    edge_codebook_size: 1024
+    depth: 16
+    heads: 32
+    kv_groups: 8
+    dim: 2048
+    surf_fsq_ckpt: /data/hdd/outputs/AutoBrep/surf-fsq.ckpt
+    edge_fsq_ckpt: /data/hdd/outputs/AutoBrep/edge-fsq.ckpt
+    ar_ckpt: /data/hdd/outputs/AutoBrep/ar.ckpt
+    freeze_backbone: True
+    pc_num_latents: 64
+    pc_hidden: 256
+    lr: 0.0001
+    weight_decay: 0.05

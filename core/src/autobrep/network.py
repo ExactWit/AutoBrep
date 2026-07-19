@@ -1245,8 +1245,13 @@ class XTransformer(nn.Module):
             ignore_index=-1,
         )
 
-    def forward(self, x, cond_mask=None, attn_mask=None):
-        """forward pass"""
+    def forward(self, x, cond_mask=None, attn_mask=None, prepend_embeds=None):
+        """forward pass
+
+        Args:
+            prepend_embeds: optional (B, M, dim) continuous prefix (e.g. point-cloud
+                soft tokens). AutoregressiveWrapper strips them from CE logits.
+        """
         target = x[:, 1:]
 
         # attention mask is per-head
@@ -1257,6 +1262,7 @@ class XTransformer(nn.Module):
             x,
             return_outputs=True,
             attn_mask=attn_mask,
+            prepend_embeds=prepend_embeds,
         )
 
         if cond_mask is not None:

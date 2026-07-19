@@ -23,5 +23,5 @@
         "sewing_tolerance": 0.002,
         "z_threshold": 0
     },
-    "weight_folder": "/autobrep/weight/folder"
+    "weight_folder": "/data/hdd/outputs/AutoBrep"
 }

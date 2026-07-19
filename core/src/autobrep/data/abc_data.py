@@ -277,6 +277,8 @@ class ARDataModule(BaseDataModule):
         uv_invariant: bool = True,
         surf_codebook_size: int = 1000,
         edge_codebook_size: int = 1000,
+        load_point_cloud: bool = False,
+        pc_num_points: int = 2048,
         **kwargs,
     ):
         # Pass only the parent arguments to the Parent class
@@ -806,7 +808,12 @@ class ARDataModule(BaseDataModule):
             face_pos, edge_pos, face_edge_adj, face_graph, geom_face_indices
         )
 
-        # TODO add point cloud condition
+        # Point-cloud condition is returned as continuous coords (not discrete
+        # BOPC tokens); the model encodes them to prepend_embeds.
+        point_cloud = None
+        if self.hparams.load_point_cloud:
+            point_cloud = self.sample_point_cloud(face_pos, face_ncs)
+
         full_seq = (
             [MMTokenIndex.BOS.value]
             + meta_tokens
@@ -868,7 +875,47 @@ class ARDataModule(BaseDataModule):
             "face_ncs": face_ncs,
             "edge_ncs": edge_ncs,
         }
+        if point_cloud is not None:
+            output["point_cloud"] = point_cloud
         return output
+
+    def sample_point_cloud(
+        self, face_pos: np.ndarray, face_ncs: np.ndarray
+    ) -> np.ndarray:
+        """
+        Build a point cloud from face UV grids placed by face bboxes (post-aug),
+        then subsample to `pc_num_points` and normalize to [-1, 1].
+        """
+        num_faces = len(face_pos)
+        if num_faces == 0:
+            return np.zeros((self.hparams.pc_num_points, 3), dtype=np.float32)
+
+        wcs_list = []
+        for bbox, ncs in zip(face_pos, face_ncs):
+            # Skip padded / degenerate faces
+            if not np.any(ncs):
+                continue
+            wcs_list.append(utils.ncs2wcs(ncs, bbox).reshape(-1, 3))
+        if not wcs_list:
+            return np.zeros((self.hparams.pc_num_points, 3), dtype=np.float32)
+
+        pts = np.concatenate(wcs_list, axis=0).astype(np.float32)
+        n = self.hparams.pc_num_points
+        if pts.shape[0] >= n:
+            idx = np.random.choice(pts.shape[0], n, replace=False)
+        else:
+            idx = np.random.choice(pts.shape[0], n, replace=True)
+        pts = pts[idx]
+
+        mins = pts.min(axis=0)
+        maxs = pts.max(axis=0)
+        center = 0.5 * (mins + maxs)
+        pts = pts - center
+        scale = np.abs(pts).max()
+        if scale < 1e-8:
+            scale = 1.0
+        pts = pts / scale
+        return pts.astype(np.float32)
 
     @property
     def dtypes(self):
@@ -877,4 +924,6 @@ class ARDataModule(BaseDataModule):
             "face_ncs": torch.float32,
             "edge_ncs": torch.float32,
         }
+        if self.hparams.load_point_cloud:
+            output["point_cloud"] = torch.float32
         return output
