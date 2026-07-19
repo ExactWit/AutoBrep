@@ -1,3 +1,3 @@
 id	label	repo_name	git_ref	branch	run_tag_default	status	notes
-pretrained	AutoBrep pretrained (uncond infer)	AutoBrep	base	pc-cond	pretrained	active	weight_folder=/data/hdd/outputs/AutoBrep; tag base + pc-cond worktree run.sh; unconditional
-pc-cond	AutoBrep point-cloud condition	AutoBrep	616aead	pc-cond	pc-cond	active	freeze AR/FSQ; train pc_encoder; data=ABC-1M
+pretrained	AutoBrep pretrained (uncond infer)	AutoBrep	7566457	pc-cond	pretrained	active	weight_folder=/data/hdd/outputs/AutoBrep; tag base + pc-cond worktree run.sh; unconditional
+pc-cond	AutoBrep point-cloud condition	AutoBrep	7566457	pc-cond	pc-cond	active	freeze AR/FSQ; train pc_encoder; data=ABC-1M
