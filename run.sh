@@ -31,16 +31,20 @@ USE_SEED="${USE_SEED:-0}"
 DEBUG="${DEBUG:-1}"
 FORMAT_ARG="${FORMAT:-step}"
 RESUME_FROM_ARG=""
-MAX_EPOCHS="${MAX_EPOCHS:-5}"
+MAX_STEPS="${MAX_STEPS:-10000}"
+VAL_CHECK_INTERVAL="${VAL_CHECK_INTERVAL:-500}"
+LIMIT_VAL_BATCHES="${LIMIT_VAL_BATCHES:-50}"
 LR="${LR:-0.0001}"
-LIMIT_TRAIN="${LIMIT_TRAIN:-50000}"
-LIMIT_VAL="${LIMIT_VAL:-500}"
 PC_NUM_POINTS="${PC_NUM_POINTS:-2048}"
 PC_NUM_LATENTS="${PC_NUM_LATENTS:-64}"
 ACCUM_GRAD="${ACCUM_GRAD:-4}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 PC_CONDITIONED="${PC_CONDITIONED:-0}"
 POINT_CLOUD="${POINT_CLOUD:-}"
+# legacy (accepted but ignored by train_pc_pipeline)
+MAX_EPOCHS="${MAX_EPOCHS:--1}"
+LIMIT_TRAIN="${LIMIT_TRAIN:--1}"
+LIMIT_VAL="${LIMIT_VAL:--1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,16 +70,19 @@ while [[ $# -gt 0 ]]; do
     --debug) DEBUG="$2"; shift 2 ;;
     --format) FORMAT_ARG="$2"; shift 2 ;;
     --resume-from) RESUME_FROM_ARG="$2"; shift 2 ;;
-    --max-epochs) MAX_EPOCHS="$2"; shift 2 ;;
+    --max-steps) MAX_STEPS="$2"; shift 2 ;;
+    --val-check-interval) VAL_CHECK_INTERVAL="$2"; shift 2 ;;
+    --limit-val-batches) LIMIT_VAL_BATCHES="$2"; shift 2 ;;
     --lr) LR="$2"; shift 2 ;;
-    --limit-train) LIMIT_TRAIN="$2"; shift 2 ;;
-    --limit-val) LIMIT_VAL="$2"; shift 2 ;;
     --pc-num-points) PC_NUM_POINTS="$2"; shift 2 ;;
     --pc-num-latents) PC_NUM_LATENTS="$2"; shift 2 ;;
     --accumulate-grad-batches) ACCUM_GRAD="$2"; shift 2 ;;
     --num-workers) NUM_WORKERS="$2"; shift 2 ;;
     --pc-conditioned) PC_CONDITIONED="$2"; shift 2 ;;
     --point-cloud) POINT_CLOUD="$2"; shift 2 ;;
+    --max-epochs) MAX_EPOCHS="$2"; shift 2 ;;
+    --limit-train) LIMIT_TRAIN="$2"; shift 2 ;;
+    --limit-val) LIMIT_VAL="$2"; shift 2 ;;
     --index|--sample-id) shift 2 ;;
     --) shift; break ;;
     -*) echo "[run.sh] unknown option: $1" >&2; exit 1 ;;
@@ -115,10 +122,10 @@ case "${MODE}" in
     "train": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
       "batch_size": 1,
-      "max_epochs": 5,
+      "max_steps": 10000,
+      "val_check_interval": 500,
+      "limit_val_batches": 50,
       "lr": 0.0001,
-      "limit_train": 50000,
-      "limit_val": 500,
       "pc_num_points": 2048,
       "pc_num_latents": 64,
       "accumulate_grad_batches": 4,
@@ -144,10 +151,10 @@ case "${MODE}" in
     "train": [
       "--weight-folder",
       "--batch-size",
-      "--max-epochs",
+      "--max-steps",
+      "--val-check-interval",
+      "--limit-val-batches",
       "--lr",
-      "--limit-train",
-      "--limit-val",
       "--pc-num-points",
       "--pc-num-latents",
       "--accumulate-grad-batches",
@@ -178,10 +185,10 @@ case "${MODE}" in
     "train": [
       {"key": "weight_folder", "flag": "--weight-folder", "label": "预训练权重目录", "type": "text"},
       {"key": "batch_size", "flag": "--batch-size", "label": "batch_size", "type": "number"},
-      {"key": "max_epochs", "flag": "--max-epochs", "label": "max_epochs", "type": "number"},
+      {"key": "max_steps", "flag": "--max-steps", "label": "优化器步数 max_steps", "type": "number"},
+      {"key": "val_check_interval", "flag": "--val-check-interval", "label": "每 N batch 验证", "type": "number"},
+      {"key": "limit_val_batches", "flag": "--limit-val-batches", "label": "每次验证 batch 上限", "type": "number"},
       {"key": "lr", "flag": "--lr", "label": "learning rate", "type": "number"},
-      {"key": "limit_train", "flag": "--limit-train", "label": "limit_train", "type": "number"},
-      {"key": "limit_val", "flag": "--limit-val", "label": "limit_val", "type": "number"},
       {"key": "pc_num_points", "flag": "--pc-num-points", "label": "点云点数", "type": "number"},
       {"key": "pc_num_latents", "flag": "--pc-num-latents", "label": "条件 token 数", "type": "number"},
       {"key": "accumulate_grad_batches", "flag": "--accumulate-grad-batches", "label": "梯度累积", "type": "number"},
@@ -224,10 +231,10 @@ JSON
       --weight-folder "${WEIGHT_FOLDER}"
       --gpu "${GPU}"
       --batch-size "${BATCH_SIZE}"
-      --max-epochs "${MAX_EPOCHS}"
+      --max-steps "${MAX_STEPS}"
+      --val-check-interval "${VAL_CHECK_INTERVAL}"
+      --limit-val-batches "${LIMIT_VAL_BATCHES}"
       --lr "${LR}"
-      --limit-train "${LIMIT_TRAIN}"
-      --limit-val "${LIMIT_VAL}"
       --pc-num-points "${PC_NUM_POINTS}"
       --pc-num-latents "${PC_NUM_LATENTS}"
       --accumulate-grad-batches "${ACCUM_GRAD}"

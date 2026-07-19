@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""exp_launcher train entry: freeze AR/FSQ, train point-cloud condition encoder."""
+"""exp_launcher train entry: freeze AR/FSQ, train point-cloud condition encoder.
+
+Streaming parquet (IterableDataset) → stop by optimizer ``max_steps``, not epochs.
+"""
 
 from __future__ import annotations
 
@@ -21,16 +24,36 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight-folder", default="/data/hdd/outputs/AutoBrep")
     p.add_argument("--gpu", default="0")
     p.add_argument("--batch-size", type=int, default=1)
-    p.add_argument("--max-epochs", type=int, default=5)
+    # Step-based controls (preferred for streaming)
+    p.add_argument(
+        "--max-steps",
+        type=int,
+        default=10000,
+        help="Optimizer steps (gradient updates). Primary stop condition.",
+    )
+    p.add_argument(
+        "--val-check-interval",
+        type=int,
+        default=500,
+        help="Run validation every N training batches.",
+    )
+    p.add_argument(
+        "--limit-val-batches",
+        type=int,
+        default=50,
+        help="Cap val microbatches per check (streaming val has no epoch end).",
+    )
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--limit-train", type=int, default=50000)
-    p.add_argument("--limit-val", type=int, default=500)
     p.add_argument("--pc-num-points", type=int, default=2048)
     p.add_argument("--pc-num-latents", type=int, default=64)
     p.add_argument("--accumulate-grad-batches", type=int, default=4)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
     p.add_argument("--config", default="")
+    # Legacy aliases (ignored with a warning) so old launcher payloads don't crash
+    p.add_argument("--max-epochs", type=int, default=-1)
+    p.add_argument("--limit-train", type=int, default=-1)
+    p.add_argument("--limit-val", type=int, default=-1)
     return p.parse_args()
 
 
@@ -79,6 +102,13 @@ def main() -> int:
     args = parse_args()
     _require_cuda(args.gpu)
 
+    if args.max_epochs > 0 or args.limit_train > 0:
+        print(
+            "[train_pc] NOTE: streaming run ignores --max-epochs/--limit-train; "
+            f"using --max-steps={args.max_steps} (optimizer updates).",
+            file=sys.stderr,
+        )
+
     import torch
     from pytorch_lightning import Trainer, Callback
     from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
@@ -99,17 +129,22 @@ def main() -> int:
     config = Path(args.config) if args.config else repo / "configs" / "autobrep_pc.yaml"
     data_root = resolve_parquet_data_root(args.data_dir)
 
+    micro_batches = args.max_steps * max(1, args.accumulate_grad_batches)
     meta = {
         "mode": "train",
+        "schedule": "max_steps",
         "dataset": args.dataset,
         "task": args.task,
         "data_dir": args.data_dir,
         "data_root": str(data_root),
         "weight_folder": str(weight),
         "batch_size": args.batch_size,
-        "max_epochs": args.max_epochs,
+        "max_steps": args.max_steps,
+        "accumulate_grad_batches": args.accumulate_grad_batches,
+        "approx_train_microbatches": micro_batches,
+        "val_check_interval": args.val_check_interval,
+        "limit_val_batches": args.limit_val_batches,
         "lr": args.lr,
-        "limit_train": args.limit_train,
         "pc_num_points": args.pc_num_points,
         "pc_num_latents": args.pc_num_latents,
         "freeze_backbone": True,
@@ -123,12 +158,12 @@ def main() -> int:
     with open(config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
-    # Apply CLI overrides onto yaml dict
     data_args = cfg["data"]["init_args"]
     data_args["data_root"] = str(data_root)
     data_args["batch_size"] = args.batch_size
-    data_args["limit_train"] = args.limit_train
-    data_args["limit_val"] = args.limit_val
+    # Unbounded stream; Trainer.max_steps stops training.
+    data_args["limit_train"] = None
+    data_args["limit_val"] = None
     data_args["pc_num_points"] = args.pc_num_points
     data_args["num_workers"] = args.num_workers
     data_args["load_point_cloud"] = True
@@ -147,7 +182,6 @@ def main() -> int:
     datamodule = ARDataModule(**data_args)
     print("[train_pc] constructing model (load ckpt → then move to CUDA)...", file=sys.stderr)
     model = AutoBrepPCModel(**model_args)
-    # Move early so nvidia-smi shows VRAM during the rest of setup.
     model = model.cuda()
     print(
         f"[train_pc] model on {next(model.parameters()).device}, "
@@ -162,6 +196,7 @@ def main() -> int:
                 raise RuntimeError(f"Training on {dev}, expected CUDA")
             print(
                 f"[train_pc] on_train_start device={dev} "
+                f"max_steps={trainer.max_steps} "
                 f"allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
                 f"reserved={torch.cuda.memory_reserved()/1e9:.2f}GB",
                 file=sys.stderr,
@@ -169,9 +204,10 @@ def main() -> int:
             )
 
         def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-            if batch_idx == 0 or (batch_idx + 1) % 50 == 0:
+            step = int(trainer.global_step)
+            if step <= 1 or step % 50 == 0:
                 print(
-                    f"[train_pc] step={batch_idx} "
+                    f"[train_pc] global_step={step} "
                     f"alloc={torch.cuda.memory_allocated()/1e9:.2f}GB "
                     f"peak={torch.cuda.max_memory_allocated()/1e9:.2f}GB",
                     file=sys.stderr,
@@ -180,11 +216,12 @@ def main() -> int:
 
     ckpt_cb = ModelCheckpoint(
         dirpath=str(ckpt_dir),
-        filename="pc-cond-{epoch:02d}-{val_loss:.4f}",
+        filename="pc-cond-step{step:06d}-{val_loss:.4f}",
         monitor="val_loss",
         mode="min",
         save_top_k=1,
         save_last=True,
+        every_n_train_steps=None,  # save when val runs
     )
     logger = TensorBoardLogger(save_dir=str(tb_dir), name="pc_cond")
 
@@ -192,8 +229,11 @@ def main() -> int:
     trainer_cfg.update(
         {
             "accelerator": "gpu",
-            "devices": [0],  # index inside CUDA_VISIBLE_DEVICES
-            "max_epochs": args.max_epochs,
+            "devices": [0],
+            "max_epochs": -1,  # unused; streaming is step-limited
+            "max_steps": int(args.max_steps),
+            "val_check_interval": int(args.val_check_interval),
+            "limit_val_batches": int(args.limit_val_batches),
             "accumulate_grad_batches": args.accumulate_grad_batches,
             "default_root_dir": str(exp_dir),
             "logger": logger,
@@ -204,15 +244,16 @@ def main() -> int:
             ],
         }
     )
-    # Remove keys Lightning Trainer may not accept from yaml leftovers
-    for k in ("profiler",):
+    for k in ("profiler", "check_val_every_n_epoch"):
         trainer_cfg.pop(k, None)
 
     trainer = Trainer(**trainer_cfg)
     ckpt_path = args.resume_from or None
     print(
         f"[train_pc] fit data_root={data_root} batch={args.batch_size} "
-        f"epochs={args.max_epochs} → {ckpt_dir}",
+        f"max_steps={args.max_steps} (opt updates) "
+        f"accum={args.accumulate_grad_batches} "
+        f"≈{micro_batches} microbatches → {ckpt_dir}",
         file=sys.stderr,
     )
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
@@ -224,6 +265,8 @@ def main() -> int:
         else None,
         "last_model_path": str(ckpt_dir / "last.ckpt"),
         "peak_cuda_GB": round(torch.cuda.max_memory_allocated() / 1e9, 3),
+        "max_steps": args.max_steps,
+        "global_step": int(trainer.global_step),
     }
     (metrics_dir / "train_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"

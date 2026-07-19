@@ -41,10 +41,20 @@
 
 ## launcher
 
+流式训练主旋钮是 **`max_steps`（优化器更新次数）**，不是 epoch。
+
 ```bash
 # capabilities 含 train + infer；datasets: abc / abc-1m
-./run.sh train --exp-dir ... --data-dir /data/hdd/datasets/ABC-1M --weight-folder /data/hdd/outputs/AutoBrep
+./run.sh train --exp-dir ... --data-dir /data/hdd/datasets/ABC-1M \
+  --weight-folder /data/hdd/outputs/AutoBrep \
+  --max-steps 10000 --accumulate-grad-batches 4 \
+  --val-check-interval 500 --limit-val-batches 50
 ./run.sh infer --pc-conditioned 1 --point-cloud /path/to.npy --checkpoint .../last.ckpt ...
 ```
+
+含义：
+- `max_steps`：停训条件（Lightning optimizer steps）
+- `accumulate_grad_batches`：每步对应若干 microbatch；大约吃掉 `max_steps × accum` 条样本（batch_size=1 时）
+- `val_check_interval` / `limit_val_batches`：周期性抽一段 val 流，避免扫完整 val
 
 `models.tsv`：`pretrained`（无条件 infer）与 `pc-cond`（点云训/推）均指向本分支 tip。
