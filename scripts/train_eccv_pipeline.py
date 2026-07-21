@@ -336,6 +336,11 @@ def main() -> int:
         stream=sys.stderr,
         max_depth=2,
     )
+    # thop may leave total_ops/total_params buffers that break resume load_state_dict
+    for mod in model.modules():
+        for name in ("total_ops", "total_params"):
+            if name in getattr(mod, "_buffers", {}):
+                del mod._buffers[name]
 
     class _CudaWatch(Callback):
         def on_train_start(self, trainer, pl_module):
@@ -421,12 +426,35 @@ def main() -> int:
 
     trainer = Trainer(**trainer_cfg)
     ckpt_path = args.resume_from or None
+    if ckpt_path:
+        # Sanitize legacy ckpts that contain thop profiling buffers.
+        raw = Path(ckpt_path)
+        if raw.is_file():
+            blob = torch.load(raw, map_location="cpu", weights_only=False)
+            sd = blob.get("state_dict")
+            if isinstance(sd, dict):
+                cleaned = {
+                    k: v
+                    for k, v in sd.items()
+                    if not k.endswith("total_ops") and not k.endswith("total_params")
+                }
+                if len(cleaned) != len(sd):
+                    blob["state_dict"] = cleaned
+                    sanitized = exp_dir / "checkpoints" / f"{raw.stem}.sanitized.ckpt"
+                    sanitized.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(blob, sanitized)
+                    ckpt_path = str(sanitized)
+                    print(
+                        f"[train_eccv] stripped thop buffers from resume ckpt → {sanitized}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
     print(
         f"[train_eccv] fit parquet={parquet_root} dataset_root={dataset_root} "
         f"cond=view+dxf (no PC) batch={args.batch_size} "
         f"schedule={schedule} max_epochs={max_epochs} max_steps={max_steps} "
         f"accum={args.accumulate_grad_batches} official_val={not args.no_official_val} "
-        f"→ {ckpt_dir}",
+        f"resume={ckpt_path or ''} → {ckpt_dir}",
         file=sys.stderr,
     )
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
