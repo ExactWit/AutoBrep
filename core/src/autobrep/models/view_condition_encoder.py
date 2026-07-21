@@ -1,4 +1,4 @@
-"""Multi-view (3 RGB renders) + structured TechDraw DXF → soft AR prefix tokens."""
+"""Multi-view (3 RGB renders) + 3-view geometric TechDraw (DXF+SVG) → soft AR prefix."""
 
 from __future__ import annotations
 
@@ -6,14 +6,20 @@ import torch
 import torch.nn as nn
 from torchvision.models import ResNet18_Weights, resnet18
 
-from autobrep.data.techdraw_dxf.schema import GEOM_DIM, MAX_PRIMS, NUM_LINETYPES, NUM_PRIM_TYPES
+from autobrep.data.techdraw_dxf.schema import (
+    GEOM_DIM,
+    MAX_PRIMS_PER_VIEW,
+    NUM_LINETYPES,
+    NUM_PRIM_TYPES,
+    NUM_TD_VIEWS,
+)
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 class TechDrawSetEncoder(nn.Module):
-    """Set-Transformer over DXF primitives (structured TechDraw / 三视图)."""
+    """Set-Transformer over DXF/SVG primitives for one TechDraw view."""
 
     def __init__(
         self,
@@ -21,7 +27,7 @@ class TechDrawSetEncoder(nn.Module):
         d_model: int = 128,
         n_layers: int = 2,
         n_heads: int = 4,
-        max_prims: int = MAX_PRIMS,
+        max_prims: int = MAX_PRIMS_PER_VIEW,
         geom_dim: int = GEOM_DIM,
         dropout: float = 0.1,
     ) -> None:
@@ -57,9 +63,19 @@ class TechDrawSetEncoder(nn.Module):
         prim_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
+        Args:
+            prim_*: (B, N) or (B, V, N) — if 3D, encodes each view independently.
         Returns:
-            (B, out_dim) pooled TechDraw feature.
+            (B, out_dim) or (B, V, out_dim)
         """
+        multi = prim_types.ndim == 3
+        if multi:
+            b, v, n = prim_types.shape
+            prim_types = prim_types.reshape(b * v, n)
+            prim_linetypes = prim_linetypes.reshape(b * v, n)
+            prim_geom = prim_geom.reshape(b * v, n, -1)
+            prim_mask = prim_mask.reshape(b * v, n)
+
         tokens = (
             self.type_embed(prim_types.clamp(min=0, max=NUM_PRIM_TYPES - 1))
             + self.linetype_embed(prim_linetypes.clamp(min=0, max=NUM_LINETYPES - 1))
@@ -78,14 +94,18 @@ class TechDrawSetEncoder(nn.Module):
         weights = weights / weights.sum(dim=1, keepdim=True).clamp(min=1.0)
         pooled = (hidden * weights).sum(dim=1)
         pooled = torch.where(empty.unsqueeze(-1), torch.zeros_like(pooled), pooled)
-        return self.out_proj(pooled)
+        out = self.out_proj(pooled)
+        if multi:
+            out = out.reshape(b, v, -1)
+        return out
 
 
 class ViewConditionEncoder(nn.Module):
     """
-    Encode 3 RGB renders + structured TechDraw DXF into M prefix embeddings.
+    Encode 3 RGB renders + 3 geometric TechDraw sheet views into M prefix embeddings.
 
-    Images are NOT used for TechDraw — DXF primitives are set-encoded.
+    Renders = shading styles of the 3D part; TechDraw = 3 orthographic sheet views
+    from DXF+SVG primitives (not rasterized).
     """
 
     def __init__(
@@ -94,6 +114,7 @@ class ViewConditionEncoder(nn.Module):
         hidden: int = 256,
         num_latents: int = 64,
         num_image_views: int = 3,
+        num_td_views: int = NUM_TD_VIEWS,
         num_heads: int = 4,
         dropout: float = 0.1,
         view_dropout_max: int = 1,
@@ -103,6 +124,7 @@ class ViewConditionEncoder(nn.Module):
         self.dim = dim
         self.num_latents = num_latents
         self.num_image_views = num_image_views
+        self.num_td_views = num_td_views
         self.view_dropout_max = view_dropout_max
 
         weights = ResNet18_Weights.DEFAULT if pretrained_backbone else None
@@ -115,6 +137,7 @@ class ViewConditionEncoder(nn.Module):
             nn.Linear(hidden, hidden),
         )
         self.techdraw_encoder = TechDrawSetEncoder(out_dim=hidden, dropout=dropout)
+        self.td_view_embed = nn.Embedding(num_td_views, hidden)
         self.techdraw_token = nn.Sequential(
             nn.Linear(hidden, hidden),
             nn.GELU(),
@@ -174,8 +197,8 @@ class ViewConditionEncoder(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            images: (B, 3, 3, H, W) float in [0, 1] — render views only
-            prim_*: TechDraw DXF tensors
+            images: (B, 3, 3, H, W) float in [0, 1] — render styles
+            prim_*: (B, V, N) / (B, V, N, G) TechDraw per sheet view
         Returns:
             prepend_embeds: (B, M+2, dim)
         """
@@ -189,22 +212,34 @@ class ViewConditionEncoder(nn.Module):
         b, v, c, h, w = images.shape
         assert v == self.num_image_views, f"expected {self.num_image_views} image views, got {v}"
         flat = images.reshape(b * v, c, h, w)
-        # ResNet expects float32 for BN stability under amp callers.
         feats = self.backbone(flat.float()).to(dtype=images.dtype)
         img_tokens = self.img_proj(feats).reshape(b, v, -1)
 
+        # Accept legacy flat (B, N) by unsqueezing to one TD view then pad.
+        if prim_types.ndim == 2:
+            prim_types = prim_types.unsqueeze(1).expand(-1, self.num_td_views, -1)
+            prim_linetypes = prim_linetypes.unsqueeze(1).expand(-1, self.num_td_views, -1)
+            prim_geom = prim_geom.unsqueeze(1).expand(-1, self.num_td_views, -1, -1)
+            prim_mask = prim_mask.unsqueeze(1)
+            # only first view keeps content for legacy
+            if self.num_td_views > 1:
+                prim_mask = prim_mask.repeat(1, self.num_td_views, 1)
+                prim_mask[:, 1:] = False
+
         td = self.techdraw_encoder(
             prim_types, prim_linetypes, prim_geom.float(), prim_mask
-        ).to(dtype=images.dtype)
+        ).to(dtype=images.dtype)  # (B, V, H)
         if self.training and drop_techdraw is False:
-            # Occasional TechDraw dropout for robustness
             if torch.rand((), device=images.device) < 0.1:
                 td = torch.zeros_like(td)
         elif drop_techdraw:
             td = torch.zeros_like(td)
-        td_token = self.techdraw_token(td).unsqueeze(1)  # (B, 1, H)
 
-        mem = torch.cat([img_tokens, td_token], dim=1)  # (B, 4, H)
+        view_ids = torch.arange(self.num_td_views, device=images.device).view(1, -1)
+        td = td + self.td_view_embed(view_ids).to(dtype=td.dtype)
+        td_tokens = self.techdraw_token(td)  # (B, V, H)
+
+        mem = torch.cat([img_tokens, td_tokens], dim=1)  # (B, 3+3, H)
         latents = self.latents.unsqueeze(0).expand(b, -1, -1)
         attn_out, _ = self.cross_attn(latents, mem, mem, need_weights=False)
         hidden = latents + attn_out

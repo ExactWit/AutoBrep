@@ -12,9 +12,12 @@ from PIL import Image
 from autobrep.data.abc_data import ARDataModule
 from autobrep.data.serialize import deserialize_array
 from autobrep.data.techdraw_dxf import (
-    empty_dxf_tensors,
+    empty_dxf_view_tensors,
     extract_dxf_primitives,
-    tensorize_dxf,
+    extract_svg_primitives,
+    merge_dxfir,
+    split_into_views,
+    tensorize_dxf_views,
     tensors_to_torch,
 )
 
@@ -49,24 +52,49 @@ def load_render_views(
     return np.stack(views, axis=0).astype(np.float32)
 
 
-def load_techdraw_dxf(dataset_root: Path, row: Dict[str, Any]) -> dict[str, torch.Tensor]:
-    """Parse TechDraw DXF into structured primitive tensors (not an image)."""
+def load_techdraw_geometry(
+    dataset_root: Path, row: Dict[str, Any]
+) -> dict[str, torch.Tensor]:
+    """
+    Geometric TechDraw: parse DXF + SVG, merge, split into 3 sheet views,
+    per-view local normalize → tensors (V, N, ...).
+    """
     root = Path(dataset_root)
-    rel = row.get("techdraw_dxf_path", "")
-    path = root / rel if rel else None
-    if path is None or not path.is_file():
-        return empty_dxf_tensors()
+    parts = []
+    dxf_rel = row.get("techdraw_dxf_path", "")
+    svg_rel = row.get("techdraw_svg_path", "")
+    dxf_path = root / dxf_rel if dxf_rel else None
+    svg_path = root / svg_rel if svg_rel else None
     try:
-        return tensors_to_torch(tensorize_dxf(extract_dxf_primitives(path)))
+        if dxf_path is not None and dxf_path.is_file():
+            parts.append(extract_dxf_primitives(dxf_path))
     except Exception:  # noqa: BLE001
-        return empty_dxf_tensors()
+        pass
+    try:
+        if svg_path is not None and svg_path.is_file():
+            parts.append(extract_svg_primitives(svg_path))
+    except Exception:  # noqa: BLE001
+        pass
+    if not parts:
+        return empty_dxf_view_tensors()
+    try:
+        merged = merge_dxfir(parts)
+        views = split_into_views(merged)
+        return tensors_to_torch(tensorize_dxf_views(views))
+    except Exception:  # noqa: BLE001
+        return empty_dxf_view_tensors()
+
+
+# backward-compatible alias
+def load_techdraw_dxf(dataset_root: Path, row: Dict[str, Any]) -> dict[str, torch.Tensor]:
+    return load_techdraw_geometry(dataset_root, row)
 
 
 class ECCVViewDataModule(ARDataModule):
     """
-    ARDataModule + 3 render images + TechDraw DXF primitives.
+    ARDataModule + 3 render images + TechDraw geometry (DXF+SVG, 3 sheet views).
 
-    TechDraw is never rasterized; SVG path is kept only as metadata.
+    TechDraw is never rasterized; primitives are set-encoded per orthographic view.
     """
 
     def __init__(
@@ -161,7 +189,7 @@ class ECCVViewDataModule(ARDataModule):
         output["images"] = load_render_views(
             self._dataset_root, row, size=self._view_size
         )
-        dxf = load_techdraw_dxf(self._dataset_root, row)
+        dxf = load_techdraw_geometry(self._dataset_root, row)
         output.update(dxf)
         sid = row.get("sample_id") or row.get("stem") or ""
         output["sample_id"] = str(sid)

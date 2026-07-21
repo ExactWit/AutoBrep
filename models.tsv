@@ -1,5 +1,7 @@
 id	label	repo_name	git_ref	branch	run_tag_default	status	notes
 pretrained	AutoBrep pretrained (uncond infer)	AutoBrep	pc-cond	pc-cond	pretrained	active	weight_folder=/data/hdd/outputs/AutoBrep; tag base=0e88b1b; uncond infer via run.sh on pc-cond
-pc-cond	AutoBrep point-cloud condition	AutoBrep	pc-cond	pc-cond	pc-cond	active	freeze AR/FSQ; train pc_encoder; infer: --pc-conditioned 1 --checkpoint <train_dir|ckpt> --point-cloud|.npy or --abc-stem; ref train=/data/hdd/exps/runs/abc-1m/gen/AutoBrep/260719-183113/pc-cond__train
-eccv	ECCV2026 CAD view-conditioned SFT	AutoBrep	eccv	eccv	eccv	active	dataset=eccv2026ws-cad-data; view+DXF (no point cloud); max_epochs=50; official_val fixed complexity=medium (legacy); train meta=GT face-count; docs/eccv_sft.md
-eccv-cx-cond	ECCV view-cond + complexity-from-condition	AutoBrep	eccv-cx-from-cond	eccv-cx-from-cond	eccv-cx-cond	active	same train as eccv (GT face-count meta in dataloader); infer/official-val complexity=from_condition (AR next-token after BOS,BOM given view+DXF prepend); official_val_samples=-1
+pc-cond	AutoBrep point-cloud condition	AutoBrep	pc-cond	pc-cond	pc-cond	active	freeze AR/FSQ; train pc_encoder; infer: --pc-conditioned 1 --checkpoint <train_dir|ckpt> --point-cloud|.npy or --abc-stem
+eccv-base	AutoBrep-on-ECCV base (flat DXF)	AutoBrep	autobrep-eccv-base	eccv-cx-from-cond	eccv-base	active	BASE for autobrep_on_eccv; tag=autobrep-eccv-base (=d8023b5); view+flat DXF set; from_condition; sparse STEP@25%; bs=2 accum=2
+eccv	ECCV2026 CAD view-conditioned SFT (legacy)	AutoBrep	eccv	eccv	eccv	active	legacy entry; prefer eccv-base; official-val complexity=medium
+eccv-cx-cond	ECCV view-cond + complexity-from-condition	AutoBrep	eccv-cx-from-cond	eccv-cx-from-cond	eccv-cx-cond	active	alias of base line on eccv-cx-from-cond tip; same as eccv-base when at d8023b5+
+eccv-3view-geom	ECCV 3-view geometric TechDraw (DXF+SVG)	AutoBrep	eccv-3view-geom	eccv-3view-geom	eccv-3view-geom	active	split TechDraw sheet into 3 ortho views; geometric DXF+SVG prims; 3 TD tokens + 3 render tokens; from_condition; STEP@25%

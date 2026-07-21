@@ -32,9 +32,15 @@
 
 | 输入 | 处理方式 |
 |------|----------|
-| 3 张渲染 PNG（transparent / hlg / hlg_translucent） | **图像**：ImageNet-pretrained **ResNet-18** |
-| TechDraw（三视图工程图） | **结构化**：解析 **DXF** 图元（LINE/ARC/CIRCLE/…），Set-Transformer 编码；**不做光栅化** |
-| SVG | 仅元数据路径；与 DXF 同源，网络侧用 DXF |
+| 3 张渲染 PNG（transparent / hlg / hlg_translucent） | **图像**：ImageNet-pretrained **ResNet-18**（三种着色风格，非三投影） |
+| TechDraw DXF + SVG | **几何**：解析图元（LINE/ARC/… 与 SVG path），**按纸面空间拆成 3 个投影视图**，各视图独立 Set-Encoder；**不光栅化** |
+
+### 方案对照
+
+| 条目 | 分支 / tag | TechDraw |
+|------|------------|----------|
+| **`eccv-base`**（autobrep_on_eccv base） | tag `autobrep-eccv-base` / `eccv-cx-from-cond@d8023b5` | 整张 DXF 扁平底池 → 1 token |
+| **`eccv-3view-geom`** | `eccv-3view-geom` | DXF+SVG 几何图元 → 3 视图分别编码 → 3 tokens |
 
 ## STEP → parquet（对齐 AutoBrep 采样）
 

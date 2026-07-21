@@ -188,13 +188,13 @@ def estimate_view_encoder_flops(
     enc = view_encoder.to(device).eval()
     b, v, h, w = 1, int(getattr(enc, "num_image_views", 3)), 224, 224
     images = torch.randn(b, v, 3, h, w, device=device, dtype=torch.float32)
-    prim_types = torch.zeros(b, 256, device=device, dtype=torch.long)
-    prim_linetypes = torch.zeros(b, 256, device=device, dtype=torch.long)
-    prim_geom = torch.randn(b, 256, 12, device=device, dtype=torch.float32)
-    prim_mask = torch.zeros(b, 256, device=device, dtype=torch.bool)
-    prim_mask[:, :32] = True
+    prim_types = torch.zeros(b, 3, 128, device=device, dtype=torch.long)
+    prim_linetypes = torch.zeros(b, 3, 128, device=device, dtype=torch.long)
+    prim_geom = torch.randn(b, 3, 128, 12, device=device, dtype=torch.float32)
+    prim_mask = torch.zeros(b, 3, 128, device=device, dtype=torch.bool)
+    prim_mask[:, :, :32] = True
 
-    out: dict[str, Any] = {"input": {"B": b, "V": v, "H": h, "W": w, "max_prims": 256}}
+    out: dict[str, Any] = {"input": {"B": b, "V": v, "H": h, "W": w, "td_views": 3, "max_prims": 128}}
 
     # Backbone (single image) × V
     one = images[:, 0]
@@ -263,11 +263,11 @@ def _view_encoder_example(model: nn.Module, device: torch.device):
     enc = model.view_encoder
     b, v, h, w = 1, 3, 224, 224
     images = torch.zeros(b, v, 3, h, w, device=device, dtype=torch.float32)
-    prim_types = torch.zeros(b, 256, device=device, dtype=torch.long)
-    prim_linetypes = torch.zeros(b, 256, device=device, dtype=torch.long)
-    prim_geom = torch.zeros(b, 256, 12, device=device, dtype=torch.float32)
-    prim_mask = torch.zeros(b, 256, device=device, dtype=torch.bool)
-    prim_mask[:, :8] = True
+    prim_types = torch.zeros(b, 3, 128, device=device, dtype=torch.long)
+    prim_linetypes = torch.zeros(b, 3, 128, device=device, dtype=torch.long)
+    prim_geom = torch.zeros(b, 3, 128, 12, device=device, dtype=torch.float32)
+    prim_mask = torch.zeros(b, 3, 128, device=device, dtype=torch.bool)
+    prim_mask[:, :, :8] = True
     return enc(images, prim_types, prim_linetypes, prim_geom, prim_mask)
 
 

@@ -48,6 +48,8 @@ LINETYPE_NAMES = {
 # lwpolyline:  start/end + midpoint xy (6) + closed flag
 GEOM_DIM = 12
 MAX_PRIMS = 256
+MAX_PRIMS_PER_VIEW = 128
+NUM_TD_VIEWS = 3
 SPLINE_SAMPLE_POINTS = 4
 
 
@@ -122,6 +124,8 @@ __all__ = [
     "LINETYPE_NAMES",
     "GEOM_DIM",
     "MAX_PRIMS",
+    "MAX_PRIMS_PER_VIEW",
+    "NUM_TD_VIEWS",
     "SPLINE_SAMPLE_POINTS",
     "asdict",
 ]
