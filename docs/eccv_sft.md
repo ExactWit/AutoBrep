@@ -21,12 +21,15 @@
 
 训练时 prepend 与复杂度 token 同属一条 CE 序列，因此 `P(C\|cond)` 被联合学习；`from_condition` 即在推理时取该条件分布。
 
-## 验证节奏（`eccv-cx-cond`）
+## 验证节奏（`eccv-base` / `eccv-3view-geom`）
 
 | 频率 | 内容 |
 |------|------|
-| **每 epoch** | CE `val_loss`（无 STEP；`limit_val_batches` 控制） |
-| **总 epoch 的 25%/50%/75%/100%** | 全量 official STEP 生成 + `min_eval/eval.py`（`--official-val-epoch-frac 0.25`；`--official-val-every N` 可改回固定间隔） |
+| **每 epoch** | CE `val_loss`（无 STEP） |
+| **25% / 50% / 75%** | 固定小子集 STEP（默认 24）+ `min_eval`；AR `gen_batch` 默认 4 吃显存 |
+| **100%（末 epoch）** | 全量 official val STEP（~694） |
+
+CLI：`--official-val-samples-mid 24`、`--official-val-gen-batch 4`、`--official-val-samples -1`。
 
 ## 条件模态（重要）
 

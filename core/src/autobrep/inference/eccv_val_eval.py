@@ -87,13 +87,9 @@ def resolve_complexity_id(
     prim_linetypes: torch.Tensor | None = None,
     prim_geom: torch.Tensor | None = None,
     prim_mask: torch.Tensor | None = None,
-) -> tuple[int, str]:
+) -> tuple[list[int], list[str]]:
     """
-    Map complexity mode → token id.
-
-    Modes:
-      easy/medium/hard/random — fixed tokens (legacy infer)
-      from_condition|auto|cond — AR next-token given view+DXF prepend
+    Map complexity mode → token id(s). Always returns per-batch lists.
     """
     mode = str(complexity or "medium").lower().strip()
     fixed = {
@@ -102,6 +98,13 @@ def resolve_complexity_id(
         "hard": MMTokenIndex.GEN_HARD.value,
         "random": MMTokenIndex.GEN_UNCOND.value,
         "uncond": MMTokenIndex.GEN_UNCOND.value,
+    }
+    b = 1 if images is None else int(images.shape[0])
+    name_of = {
+        MMTokenIndex.GEN_EASY.value: "easy",
+        MMTokenIndex.GEN_MID.value: "medium",
+        MMTokenIndex.GEN_HARD.value: "hard",
+        MMTokenIndex.GEN_UNCOND.value: "random",
     }
     if mode in ("from_condition", "auto", "cond"):
         if transformer is None or images is None or prim_types is None:
@@ -112,25 +115,241 @@ def resolve_complexity_id(
                 "transformer lacks predict_complexity_from_condition "
                 "(need AutoBrepViewModel)"
             )
-        cid = int(
-            predict(
-                images,
-                prim_types,
-                prim_linetypes,
-                prim_geom,
-                prim_mask,
-            )
+        raw = predict(
+            images,
+            prim_types,
+            prim_linetypes,
+            prim_geom,
+            prim_mask,
         )
-        name = {
-            MMTokenIndex.GEN_EASY.value: "easy",
-            MMTokenIndex.GEN_MID.value: "medium",
-            MMTokenIndex.GEN_HARD.value: "hard",
-            MMTokenIndex.GEN_UNCOND.value: "random",
-        }.get(cid, str(cid))
-        return cid, f"from_condition:{name}"
+        if isinstance(raw, list):
+            cids = [int(x) for x in raw]
+        else:
+            cids = [int(raw)] * b if b > 1 else [int(raw)]
+        if len(cids) == 1 and b > 1:
+            cids = cids * b
+        labels = [f"from_condition:{name_of.get(c, str(c))}" for c in cids]
+        return cids, labels
     if mode in fixed:
-        return fixed[mode], mode
-    return MMTokenIndex.GEN_MID.value, f"fallback_medium({mode})"
+        cid = fixed[mode]
+        return [cid] * b, [mode] * b
+    return [MMTokenIndex.GEN_MID.value] * b, [f"fallback_medium({mode})"] * b
+
+
+def _stack_conditions(
+    dataset_root: Path,
+    sample_ids: Sequence[str],
+    device: torch.device,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor], list[dict[str, Any]]]:
+    """Load and stack conditions for distinct sample ids → batch dim B."""
+    images_list = []
+    dxf_lists: dict[str, list[torch.Tensor]] = {}
+    metas: list[dict[str, Any]] = []
+    for sid in sample_ids:
+        images, dxf, meta = load_condition_for_sample(
+            dataset_root, sid, batch_size=1
+        )
+        images_list.append(images[0])
+        metas.append(meta)
+        for k, v in dxf.items():
+            if not isinstance(v, torch.Tensor):
+                continue
+            dxf_lists.setdefault(k, []).append(v)
+    images_b = torch.stack(images_list, dim=0).to(device=device, dtype=torch.float16)
+    dxf_b: dict[str, torch.Tensor] = {}
+    for k, vs in dxf_lists.items():
+        stacked = torch.stack(vs, dim=0)
+        if k in {"prim_geom"}:
+            stacked = stacked.to(device=device, dtype=torch.float16)
+        else:
+            stacked = stacked.to(device=device)
+        dxf_b[k] = stacked
+    return images_b, dxf_b, metas
+
+
+def _tokens_to_step(
+    *,
+    tokens_1d,
+    transformer: LightningModule,
+    surface_fsq: SurfaceFSQVAE,
+    edge_fsq: EdgeFSQVAE,
+    device: torch.device,
+    sample_id: str,
+    out_step: Path,
+    complexity_resolved: str,
+    complexity_id: int,
+    meta: dict[str, Any],
+    vertex_threshold: float,
+    sewing_tolerance: float,
+    z_threshold: float,
+) -> dict[str, Any]:
+    class _DecodeShim:
+        pass
+
+    shim = _DecodeShim()
+    shim.transformer = transformer
+    shim.surface_fsq = surface_fsq
+    shim.edge_fsq = edge_fsq
+    with torch.no_grad():
+        decoded = AutoRegressiveSampler.decode_tokens(
+            shim, tokens_1d.reshape(1, -1)
+        )
+    cad_list = AutoRegressiveSampler.convert_to_cad_data(decoded) if decoded else []
+    if not cad_list:
+        return {
+            "sample_id": sample_id,
+            "ok": False,
+            "error": "decode_failed",
+            "complexity": complexity_resolved,
+            "complexity_id": complexity_id,
+            **meta,
+        }
+    builders = [
+        AutoBrepBuilder(
+            device=device,
+            z_threshold=z_threshold,
+            vertex_threshold=vertex_threshold,
+            sewing_tolerance=sewing_tolerance,
+        )
+    ]
+    with torch.enable_grad():
+        compound = reconstruct_compound(cad_list[0], builders)
+    if compound is None:
+        return {
+            "sample_id": sample_id,
+            "ok": False,
+            "error": "rebuild_failed",
+            "complexity": complexity_resolved,
+            "complexity_id": complexity_id,
+            **meta,
+        }
+    out_step.parent.mkdir(parents=True, exist_ok=True)
+    save_step_func([compound], out_step)
+    return {
+        "sample_id": sample_id,
+        "ok": True,
+        "step": str(out_step),
+        "num_faces": int(cad_list[0].face_pos_cad.shape[0]),
+        "complexity": complexity_resolved,
+        "complexity_id": complexity_id,
+        **meta,
+    }
+
+
+def generate_pred_steps_batched(
+    *,
+    transformer: LightningModule,
+    surface_fsq: SurfaceFSQVAE,
+    edge_fsq: EdgeFSQVAE,
+    device: torch.device,
+    dataset_root: Path,
+    sample_ids: Sequence[str],
+    pred_dir: Path,
+    complexity: str = "from_condition",
+    temperature: float = 1.0,
+    top_p: float = 0.9,
+    gen_batch_size: int = 4,
+    vertex_threshold: float = 0.002,
+    sewing_tolerance: float = 0.002,
+    z_threshold: float = 0.0,
+) -> list[dict[str, Any]]:
+    """
+    Batched AR generate (uses more VRAM), then serial decode/rebuild per sample.
+
+    ``gen_batch_size`` controls how many conditioned prompts share one AR pass.
+    """
+    was_training = transformer.training
+    transformer.eval()
+    results: list[dict[str, Any]] = []
+    ids = [str(s) for s in sample_ids]
+    try:
+        for start in range(0, len(ids), max(1, int(gen_batch_size))):
+            chunk = ids[start : start + max(1, int(gen_batch_size))]
+            try:
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                images, dxf, metas = _stack_conditions(
+                    dataset_root, chunk, device
+                )
+                with torch.no_grad():
+                    autocast_ctx = (
+                        torch.autocast(device_type="cuda", enabled=False)
+                        if device.type == "cuda"
+                        else torch.autocast(device_type="cpu", enabled=False)
+                    )
+                    with autocast_ctx:
+                        cids, clabels = resolve_complexity_id(
+                            complexity,
+                            transformer=transformer,
+                            images=images,
+                            prim_types=dxf["prim_types"],
+                            prim_linetypes=dxf["prim_linetypes"],
+                            prim_geom=dxf["prim_geom"],
+                            prim_mask=dxf["prim_mask"],
+                        )
+                        prompt_rows = []
+                        for c in cids:
+                            prompt_rows.extend(
+                                [
+                                    MMTokenIndex.BOS.value,
+                                    MMTokenIndex.BOM.value,
+                                    int(c),
+                                    MMTokenIndex.EOM.value,
+                                    MMTokenIndex.BOC.value,
+                                ]
+                            )
+                        prompt = (
+                            torch.tensor(prompt_rows, dtype=torch.long, device=device)
+                            .view(len(chunk), 5)
+                        )
+                        samples = transformer.generate(
+                            prompt,
+                            temperature,
+                            top_p,
+                            images=images,
+                            prim_types=dxf["prim_types"],
+                            prim_linetypes=dxf["prim_linetypes"],
+                            prim_geom=dxf["prim_geom"],
+                            prim_mask=dxf["prim_mask"],
+                        )
+                        tokens = torch.concat([prompt, samples], -1).detach().cpu()
+
+                for i, sid in enumerate(chunk):
+                    try:
+                        status = _tokens_to_step(
+                            tokens_1d=tokens[i].numpy(),
+                            transformer=transformer,
+                            surface_fsq=surface_fsq,
+                            edge_fsq=edge_fsq,
+                            device=device,
+                            sample_id=sid,
+                            out_step=pred_dir / f"{sid}.step",
+                            complexity_resolved=clabels[i],
+                            complexity_id=int(cids[i]),
+                            meta=metas[i],
+                            vertex_threshold=vertex_threshold,
+                            sewing_tolerance=sewing_tolerance,
+                            z_threshold=z_threshold,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        status = {
+                            "sample_id": sid,
+                            "ok": False,
+                            "error": f"exception:{type(exc).__name__}:{exc}",
+                        }
+                    results.append(status)
+            except Exception as exc:  # noqa: BLE001
+                for sid in chunk:
+                    results.append(
+                        {
+                            "sample_id": sid,
+                            "ok": False,
+                            "error": f"exception:{type(exc).__name__}:{exc}",
+                        }
+                    )
+    finally:
+        transformer.train(was_training)
+    return results
 
 
 def generate_pred_step(
@@ -149,124 +368,32 @@ def generate_pred_step(
     sewing_tolerance: float = 0.002,
     z_threshold: float = 0.0,
 ) -> dict[str, Any]:
-    """Generate one STEP under view+DXF condition using the live train module."""
-    images, dxf, meta = load_condition_for_sample(
-        dataset_root, sample_id, batch_size=1
+    """Generate one STEP (thin wrapper over batched path)."""
+    logs = generate_pred_steps_batched(
+        transformer=transformer,
+        surface_fsq=surface_fsq,
+        edge_fsq=edge_fsq,
+        device=device,
+        dataset_root=dataset_root,
+        sample_ids=[sample_id],
+        pred_dir=out_step.parent,
+        complexity=complexity,
+        temperature=temperature,
+        top_p=top_p,
+        gen_batch_size=1,
+        vertex_threshold=vertex_threshold,
+        sewing_tolerance=sewing_tolerance,
+        z_threshold=z_threshold,
     )
-    # Match vanilla AutoBrep sampler dtypes; disable outer AMP (PL bf16) which
-    # interacts badly with AR generate under inference_mode.
-    images = images.to(device=device, dtype=torch.float16)
-    prim_types = dxf["prim_types"].to(device)
-    prim_linetypes = dxf["prim_linetypes"].to(device)
-    prim_geom = dxf["prim_geom"].to(device=device, dtype=torch.float16)
-    prim_mask = dxf["prim_mask"].to(device)
-
-    was_training = transformer.training
-    transformer.eval()
-    try:
-        with torch.no_grad():
-            autocast_ctx = (
-                torch.autocast(device_type="cuda", enabled=False)
-                if device.type == "cuda"
-                else torch.autocast(device_type="cpu", enabled=False)
-            )
-            with autocast_ctx:
-                complexity_id, complexity_resolved = resolve_complexity_id(
-                    complexity,
-                    transformer=transformer,
-                    images=images,
-                    prim_types=prim_types,
-                    prim_linetypes=prim_linetypes,
-                    prim_geom=prim_geom,
-                    prim_mask=prim_mask,
-                )
-                prompt = (
-                    torch.LongTensor(
-                        [
-                            MMTokenIndex.BOS.value,
-                            MMTokenIndex.BOM.value,
-                            complexity_id,
-                            MMTokenIndex.EOM.value,
-                            MMTokenIndex.BOC.value,
-                        ]
-                    )
-                    .reshape(1, 5)
-                    .to(device)
-                )
-                samples = transformer.generate(
-                    prompt,
-                    temperature,
-                    top_p,
-                    images=images,
-                    prim_types=prim_types,
-                    prim_linetypes=prim_linetypes,
-                    prim_geom=prim_geom,
-                    prim_mask=prim_mask,
-                )
-        tokens = torch.concat([prompt, samples], -1).detach().cpu().numpy()
-
-        class _DecodeShim:
-            pass
-
-        shim = _DecodeShim()
-        shim.transformer = transformer
-        shim.surface_fsq = surface_fsq
-        shim.edge_fsq = edge_fsq
-        with torch.no_grad():
-            decoded = AutoRegressiveSampler.decode_tokens(shim, tokens)
-        cad_list = AutoRegressiveSampler.convert_to_cad_data(decoded) if decoded else []
-        if not cad_list:
-            return {
-                "sample_id": sample_id,
-                "ok": False,
-                "error": "decode_failed",
-                "complexity": complexity_resolved,
-                "complexity_id": complexity_id,
-                **meta,
-            }
-
-        builders = [
-            AutoBrepBuilder(
-                device=device,
-                z_threshold=z_threshold,
-                vertex_threshold=vertex_threshold,
-                sewing_tolerance=sewing_tolerance,
-            )
-        ]
-        # Lightning disables grads for the whole validation epoch; AutoBrepBuilder's
-        # joint_optimize needs .backward() (same as scripts/infer_pipeline.py).
-        with torch.enable_grad():
-            compound = reconstruct_compound(cad_list[0], builders)
-        if compound is None:
-            return {
-                "sample_id": sample_id,
-                "ok": False,
-                "error": "rebuild_failed",
-                "complexity": complexity_resolved,
-                "complexity_id": complexity_id,
-                **meta,
-            }
-
-        out_step.parent.mkdir(parents=True, exist_ok=True)
-        save_step_func([compound], out_step)
-        return {
-            "sample_id": sample_id,
-            "ok": True,
-            "step": str(out_step),
-            "num_faces": int(cad_list[0].face_pos_cad.shape[0]),
-            "complexity": complexity_resolved,
-            "complexity_id": complexity_id,
-            **meta,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "sample_id": sample_id,
-            "ok": False,
-            "error": f"exception:{type(exc).__name__}:{exc}",
-            **(meta if "meta" in locals() else {}),
-        }
-    finally:
-        transformer.train(was_training)
+    status = logs[0] if logs else {"sample_id": sample_id, "ok": False, "error": "empty"}
+    # ensure out path name if ok
+    if status.get("ok") and out_step.name != f"{sample_id}.step":
+        src = Path(status["step"])
+        if src.is_file() and src.resolve() != out_step.resolve():
+            out_step.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, out_step)
+            status["step"] = str(out_step)
+    return status
 
 
 def run_official_eval(
@@ -362,6 +489,8 @@ class EccvOfficialValCallback(Callback):
         weight_folder: str | Path,
         sample_ids: Optional[Sequence[str]] = None,
         max_samples: int = -1,
+        max_samples_mid: int = 24,
+        gen_batch_size: int = 4,
         every_n_val_checks: int = 0,
         epoch_frac: float = 0.25,
         max_epochs: int = 50,
@@ -378,6 +507,8 @@ class EccvOfficialValCallback(Callback):
         self.dataset_root = Path(dataset_root)
         self.weight_folder = Path(weight_folder)
         self.max_samples = int(max_samples)
+        self.max_samples_mid = int(max_samples_mid)
+        self.gen_batch_size = max(1, int(gen_batch_size))
         # >0: every N completed epochs; <=0: use epoch_frac milestones
         self.every_n_val_checks = int(every_n_val_checks)
         self.epoch_frac = float(epoch_frac)
@@ -391,6 +522,7 @@ class EccvOfficialValCallback(Callback):
         self.top_p = top_p
         self.enabled = enabled
         self._sample_ids = list(sample_ids) if sample_ids else None
+        self._mid_ids: Optional[list[str]] = None
         self._val_check_count = 0
         self._surface_fsq: Optional[SurfaceFSQVAE] = None
         self._edge_fsq: Optional[EdgeFSQVAE] = None
@@ -423,15 +555,32 @@ class EccvOfficialValCallback(Callback):
 
     def _ensure_ids(self) -> list[str]:
         if self._sample_ids is None:
+            # Full pool (ignore max_samples here; slice later per mid/full).
             self._sample_ids = load_official_val_ids(
                 self.dataset_root,
-                max_samples=self.max_samples,
+                max_samples=-1,
                 split="val",
                 datasplit=self.datasplit,
                 parquet_root=self.parquet_root,
                 require_gt=True,
             )
+        if self._mid_ids is None:
+            n_mid = self.max_samples_mid
+            if n_mid <= 0:
+                n_mid = 24
+            self._mid_ids = list(self._sample_ids[:n_mid])
         return list(self._sample_ids)
+
+    def _ids_for_eval(self, trainer: Trainer) -> tuple[list[str], str]:
+        """Mid milestones → fixed small set; final epoch → full val."""
+        all_ids = self._ensure_ids()
+        epoch_1based = int(trainer.current_epoch) + 1
+        is_final = epoch_1based >= max(1, self.max_epochs)
+        if is_final:
+            if self.max_samples > 0:
+                return all_ids[: self.max_samples], "full"
+            return all_ids, "full"
+        return list(self._mid_ids or all_ids[:24]), "mid"
 
     def _ensure_fsq(self, device: torch.device) -> tuple[SurfaceFSQVAE, EdgeFSQVAE]:
         if self._surface_fsq is not None and self._edge_fsq is not None:
@@ -459,6 +608,7 @@ class EccvOfficialValCallback(Callback):
         me = int(trainer.max_epochs) if int(trainer.max_epochs or 0) > 0 else self.max_epochs
         self.max_epochs = me
         self._milestones = self._compute_milestones()
+        self._ensure_ids()
         if self.every_n_val_checks > 0:
             sched = f"every {self.every_n_val_checks} epoch(s)"
         else:
@@ -467,13 +617,14 @@ class EccvOfficialValCallback(Callback):
                 f"(frac={self.epoch_frac}, max_epochs={me})"
             )
         print(
-            f"[eccv_val] callback ready: STEP gen on official∩processed val "
-            f"(n={len(sample_ids)}, max_samples={self.max_samples}); "
-            f"CE val every epoch; STEP {sched}",
+            f"[eccv_val] callback ready: CE every epoch; STEP {sched}; "
+            f"mid_n={len(self._mid_ids or [])} (fixed), "
+            f"full_n={len(sample_ids) if self.max_samples <= 0 else min(len(sample_ids), self.max_samples)}, "
+            f"gen_batch={self.gen_batch_size}",
             flush=True,
         )
         print(
-            f"[eccv_val] first ids: {sample_ids[: min(8, len(sample_ids))]}",
+            f"[eccv_val] mid ids: {(self._mid_ids or [])[: min(8, len(self._mid_ids or []))]}",
             flush=True,
         )
 
@@ -488,7 +639,7 @@ class EccvOfficialValCallback(Callback):
         if not self._should_run_official(trainer):
             return
 
-        sample_ids = self._ensure_ids()
+        sample_ids, mode = self._ids_for_eval(trainer)
         if not sample_ids:
             print("[eccv_val] no official val sample ids; skip", flush=True)
             return
@@ -496,7 +647,7 @@ class EccvOfficialValCallback(Callback):
         work = self.work_dir or (
             Path(trainer.default_root_dir)
             / "metrics"
-            / f"official_val_epoch{int(trainer.current_epoch)+1:03d}"
+            / f"official_val_{mode}_epoch{int(trainer.current_epoch)+1:03d}"
             f"_step{int(trainer.global_step):06d}"
         )
         work.mkdir(parents=True, exist_ok=True)
@@ -508,7 +659,8 @@ class EccvOfficialValCallback(Callback):
             return
 
         print(
-            f"[eccv_val] generating {len(ok_ids)} STEPs on official val "
+            f"[eccv_val] generating {len(ok_ids)} STEPs ({mode}) "
+            f"batch={self.gen_batch_size} "
             f"(epoch={int(trainer.current_epoch)+1}/{self.max_epochs}, "
             f"step={trainer.global_step}) → {work}",
             flush=True,
@@ -519,32 +671,23 @@ class EccvOfficialValCallback(Callback):
         gen_log: list[dict[str, Any]] = []
         try:
             surface_fsq, edge_fsq = self._ensure_fsq(device)
-            for i, sid in enumerate(ok_ids):
-                try:
-                    if device.type == "cuda":
-                        torch.cuda.empty_cache()
-                    status = generate_pred_step(
-                        transformer=pl_module,
-                        surface_fsq=surface_fsq,
-                        edge_fsq=edge_fsq,
-                        device=device,
-                        dataset_root=self.dataset_root,
-                        sample_id=sid,
-                        out_step=pred_dir / f"{sid}.step",
-                        complexity=self.complexity,
-                        temperature=self.temperature,
-                        top_p=self.top_p,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    status = {
-                        "sample_id": sid,
-                        "ok": False,
-                        "error": f"exception:{exc}",
-                    }
-                gen_log.append(status)
+            gen_log = generate_pred_steps_batched(
+                transformer=pl_module,
+                surface_fsq=surface_fsq,
+                edge_fsq=edge_fsq,
+                device=device,
+                dataset_root=self.dataset_root,
+                sample_ids=ok_ids,
+                pred_dir=pred_dir,
+                complexity=self.complexity,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                gen_batch_size=self.gen_batch_size,
+            )
+            for i, status in enumerate(gen_log):
                 if (i + 1) % 10 == 0 or not status.get("ok") or i == 0:
                     print(
-                        f"[eccv_val] [{i+1}/{len(ok_ids)}] {sid}: "
+                        f"[eccv_val] [{i+1}/{len(ok_ids)}] {status.get('sample_id')}: "
                         f"ok={status.get('ok')} err={status.get('error', '')}",
                         flush=True,
                     )

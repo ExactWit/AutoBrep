@@ -53,6 +53,8 @@ MAX_EPOCHS="${MAX_EPOCHS:--1}"
 LIMIT_TRAIN="${LIMIT_TRAIN:--1}"
 LIMIT_VAL="${LIMIT_VAL:--1}"
 OFFICIAL_VAL_SAMPLES="${OFFICIAL_VAL_SAMPLES:--1}"
+OFFICIAL_VAL_SAMPLES_MID="${OFFICIAL_VAL_SAMPLES_MID:-24}"
+OFFICIAL_VAL_GEN_BATCH="${OFFICIAL_VAL_GEN_BATCH:-4}"
 OFFICIAL_VAL_EVERY="${OFFICIAL_VAL_EVERY:-0}"
 OFFICIAL_VAL_EPOCH_FRAC="${OFFICIAL_VAL_EPOCH_FRAC:-0.25}"
 NO_OFFICIAL_VAL="${NO_OFFICIAL_VAL:-0}"
@@ -105,6 +107,8 @@ while [[ $# -gt 0 ]]; do
     --limit-train) LIMIT_TRAIN="$2"; shift 2 ;;
     --limit-val) LIMIT_VAL="$2"; shift 2 ;;
     --official-val-samples) OFFICIAL_VAL_SAMPLES="$2"; shift 2 ;;
+    --official-val-samples-mid) OFFICIAL_VAL_SAMPLES_MID="$2"; shift 2 ;;
+    --official-val-gen-batch) OFFICIAL_VAL_GEN_BATCH="$2"; shift 2 ;;
     --official-val-every) OFFICIAL_VAL_EVERY="$2"; shift 2 ;;
     --official-val-epoch-frac) OFFICIAL_VAL_EPOCH_FRAC="$2"; shift 2 ;;
     --no-official-val) NO_OFFICIAL_VAL="$2"; shift 2 ;;
@@ -165,6 +169,8 @@ case "${MODE}" in
       "accumulate_grad_batches": 2,
       "num_workers": 2,
       "official_val_samples": -1,
+      "official_val_samples_mid": 24,
+      "official_val_gen_batch": 4,
       "official_val_every": 0,
       "official_val_epoch_frac": 0.25,
       "no_official_val": false,
@@ -213,6 +219,8 @@ case "${MODE}" in
       "--gpu",
       "--resume-from",
       "--official-val-samples",
+      "--official-val-samples-mid",
+      "--official-val-gen-batch",
       "--official-val-every",
       "--official-val-epoch-frac",
       "--no-official-val",
@@ -262,7 +270,9 @@ case "${MODE}" in
       {"key": "view_num_latents", "flag": "--view-num-latents", "label": "视图条件 token 数", "type": "number"},
       {"key": "accumulate_grad_batches", "flag": "--accumulate-grad-batches", "label": "梯度累积", "type": "number"},
       {"key": "num_workers", "flag": "--num-workers", "label": "num_workers", "type": "number"},
-      {"key": "official_val_samples", "flag": "--official-val-samples", "label": "官方 val STEP 数(≤0=全量~694)", "type": "number"},
+      {"key": "official_val_samples", "flag": "--official-val-samples", "label": "末 epoch 全量 STEP 数(≤0=全~694)", "type": "number"},
+      {"key": "official_val_samples_mid", "flag": "--official-val-samples-mid", "label": "中途 STEP 固定子集大小", "type": "number"},
+      {"key": "official_val_gen_batch", "flag": "--official-val-gen-batch", "label": "STEP AR 批大小(吃显存)", "type": "number"},
       {"key": "official_val_every", "flag": "--official-val-every", "label": "STEP 每 N epoch（0=用 frac 里程碑）", "type": "number"},
       {"key": "official_val_epoch_frac", "flag": "--official-val-epoch-frac", "label": "STEP 里程碑比例(0.25→25/50/75/100%)", "type": "number"},
       {"key": "no_official_val", "flag": "--no-official-val", "label": "关闭官方 STEP 评测", "type": "bool"},
@@ -345,6 +355,8 @@ JSON
         --accumulate-grad-batches "${ACCUM_GRAD}"
         --num-workers "${NUM_WORKERS}"
         --official-val-samples "${OFFICIAL_VAL_SAMPLES}"
+        --official-val-samples-mid "${OFFICIAL_VAL_SAMPLES_MID}"
+        --official-val-gen-batch "${OFFICIAL_VAL_GEN_BATCH}"
         --official-val-every "${OFFICIAL_VAL_EVERY}"
         --official-val-epoch-frac "${OFFICIAL_VAL_EPOCH_FRAC}"
         --eval-py "${EVAL_PY}"
