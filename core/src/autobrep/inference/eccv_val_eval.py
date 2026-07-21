@@ -176,7 +176,10 @@ def generate_pred_step(
                 sewing_tolerance=sewing_tolerance,
             )
         ]
-        compound = reconstruct_compound(cad_list[0], builders)
+        # Lightning disables grads for the whole validation epoch; AutoBrepBuilder's
+        # joint_optimize needs .backward() (same as scripts/infer_pipeline.py).
+        with torch.enable_grad():
+            compound = reconstruct_compound(cad_list[0], builders)
         if compound is None:
             return {
                 "sample_id": sample_id,
@@ -193,6 +196,13 @@ def generate_pred_step(
             "step": str(out_step),
             "num_faces": int(cad_list[0].face_pos_cad.shape[0]),
             **meta,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "sample_id": sample_id,
+            "ok": False,
+            "error": f"exception:{type(exc).__name__}:{exc}",
+            **(meta if "meta" in locals() else {}),
         }
     finally:
         transformer.train(was_training)
