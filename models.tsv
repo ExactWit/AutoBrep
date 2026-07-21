@@ -1,0 +1,5 @@
+id	label	repo_name	git_ref	branch	run_tag_default	status	notes
+pretrained	AutoBrep pretrained (uncond infer)	AutoBrep	pc-cond	pc-cond	pretrained	active	weight_folder=/data/hdd/outputs/AutoBrep; tag base=0e88b1b; uncond infer via run.sh on pc-cond
+pc-cond	AutoBrep point-cloud condition	AutoBrep	pc-cond	pc-cond	pc-cond	active	freeze AR/FSQ; train pc_encoder; infer: --pc-conditioned 1 --checkpoint <train_dir|ckpt> --point-cloud|.npy or --abc-stem
+eccv	ECCV2026 CAD view-conditioned SFT	AutoBrep	eccv	eccv	eccv	active	dataset=eccv2026ws-cad-data; view+DXF; train meta=GT face-count; official-val complexity=medium (legacy); docs/eccv_sft.md on eccv branch
+eccv-cx-cond	ECCV view-cond + complexity-from-condition	AutoBrep	eccv-cx-from-cond	eccv-cx-from-cond	eccv-cx-cond	active	same train as eccv (GT face-count); infer/official-val --complexity from_condition (AR next-token after BOS,BOM given view+DXF)
