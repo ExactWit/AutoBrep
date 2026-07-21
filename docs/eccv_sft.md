@@ -40,12 +40,28 @@
 
 依赖：`torchvision`、`ezdxf`、`thop`（可 `pip install`）。
 
+## TensorBoard 指标
+
+| 指标 | 含义 |
+|------|------|
+| `train_loss` / `val_loss` | AR token CE（parquet train / **官方 datasplit val**） |
+| `lr` | 学习率 |
+| `val/official_gen_success` | 官方 val 上 STEP 生成成功率 |
+| `val/official_summary` | 挑战 `min_eval/eval.py` 综合分 |
+| `val/official_valid_ratio` | 合法 B-Rep 比例 |
+| `val/official_surface_f1` / `edge_f1` / `vertex_f1` / `topo_f1` | 几何 / 拓扑 F1 |
+
+每次官方评测会在 `metrics/official_val_stepXXXXXX/` 写下 `gt/`、`pred/`、`metrics.json`。  
+CLI：`--official-val-samples 4`、`--official-val-every 1`、`--no-official-val`、`--eval-py ...`。
+
 ## Launcher / CLI
 
 ```bash
 ./run.sh preprocess --data-dir /data/hdd/datasets/eccv2026ws-cad-data --num-workers 4
+# 小数据集默认按 epoch 重复遍历（非点云；条件=3 渲染图+DXF）
 ./run.sh train --dataset eccv2026ws-cad-data --data-dir /data/hdd/datasets/eccv2026ws-cad-data \
-  --weight-folder /data/hdd/outputs/AutoBrep --exp-dir <exp> --max-steps 10000
+  --weight-folder /data/hdd/outputs/AutoBrep --exp-dir <exp> \
+  --max-epochs 50 --official-val-samples 4 --official-val-every 1
 ./run.sh infer --view-conditioned 1 --checkpoint <exp>/checkpoints --sample-id 000029 \
   --data-dir /data/hdd/datasets/eccv2026ws-cad-data --exp-dir <exp> --output-dir <out>
 ```

@@ -30,9 +30,32 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
     p.add_argument("--config", default="")
-    p.add_argument("--max-epochs", type=int, default=-1)
+    p.add_argument("--max-epochs", type=int, default=-1,
+                   help=">0 时按 epoch 训练（会重复遍历小数据集）；忽略 --max-steps")
     p.add_argument("--limit-train", type=int, default=-1)
     p.add_argument("--limit-val", type=int, default=-1)
+    # Official B-Rep quality eval (challenge min_eval/eval.py on datasplit val)
+    p.add_argument(
+        "--official-val-samples",
+        type=int,
+        default=4,
+        help="How many official datasplit val ids to generate+score each official val",
+    )
+    p.add_argument(
+        "--official-val-every",
+        type=int,
+        default=1,
+        help="Run official STEP eval every N Lightning val checks (1=every val)",
+    )
+    p.add_argument(
+        "--no-official-val",
+        action="store_true",
+        help="Disable STEP generation + challenge eval.py during training",
+    )
+    p.add_argument(
+        "--eval-py",
+        default="/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py",
+    )
     return p.parse_args()
 
 
@@ -107,12 +130,22 @@ def main() -> int:
     args = parse_args()
     _require_cuda(args.gpu)
 
-    if args.max_epochs > 0 or args.limit_train > 0:
-        print(
-            "[train_eccv] NOTE: streaming ignores --max-epochs/--limit-train; "
-            f"using --max-steps={args.max_steps}.",
-            file=sys.stderr,
-        )
+    # ECCV 数据量小：优先按 epoch 重复遍历；max_epochs>0 时关闭 max_steps。
+    use_epochs = int(args.max_epochs) > 0
+    if use_epochs:
+        max_epochs = int(args.max_epochs)
+        max_steps = -1
+        schedule = "max_epochs"
+    else:
+        max_epochs = -1
+        max_steps = int(args.max_steps)
+        schedule = "max_steps"
+        if args.limit_train > 0:
+            print(
+                "[train_eccv] NOTE: streaming IterableDataset; "
+                f"--limit-train={args.limit_train} caps rows per epoch pass.",
+                file=sys.stderr,
+            )
 
     import torch
     from pytorch_lightning import Trainer, Callback
@@ -134,10 +167,10 @@ def main() -> int:
     config = Path(args.config) if args.config else repo / "configs" / "autobrep_eccv.yaml"
     parquet_root, dataset_root = resolve_eccv_paths(args.data_dir)
 
-    micro_batches = args.max_steps * max(1, args.accumulate_grad_batches)
     meta = {
         "mode": "train",
-        "schedule": "max_steps",
+        "schedule": schedule,
+        "conditioning": "view+dxf (no point cloud)",
         "dataset": args.dataset,
         "task": args.task,
         "data_dir": args.data_dir,
@@ -145,17 +178,36 @@ def main() -> int:
         "dataset_root": str(dataset_root),
         "weight_folder": str(weight),
         "batch_size": args.batch_size,
-        "max_steps": args.max_steps,
+        "max_steps": max_steps,
+        "max_epochs": max_epochs,
         "accumulate_grad_batches": args.accumulate_grad_batches,
-        "approx_train_microbatches": micro_batches,
         "val_check_interval": args.val_check_interval,
         "limit_val_batches": args.limit_val_batches,
         "lr": args.lr,
         "view_num_latents": args.view_num_latents,
         "freeze_backbone": True,
+        "load_point_cloud": False,
         "loss": "AR token CE (prepend excluded)",
         "gpu": args.gpu,
         "cuda_device": torch.cuda.get_device_name(0),
+        "official_val": not args.no_official_val,
+        "official_val_samples": args.official_val_samples,
+        "official_val_every": args.official_val_every,
+        "eval_py": args.eval_py,
+        "datasplit": args.datasplit
+        or str(Path(dataset_root) / "processed" / "datasplit.json"),
+        "tb_metrics": [
+            "train_loss",
+            "val_loss",
+            "lr",
+            "val/official_gen_success",
+            "val/official_summary",
+            "val/official_valid_ratio",
+            "val/official_surface_f1",
+            "val/official_edge_f1",
+            "val/official_vertex_f1",
+            "val/official_topo_f1",
+        ],
     }
     (metrics_dir / "train_config.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -168,8 +220,8 @@ def main() -> int:
     data_args["data_root"] = str(parquet_root)
     data_args["dataset_root"] = str(dataset_root)
     data_args["batch_size"] = args.batch_size
-    data_args["limit_train"] = None
-    data_args["limit_val"] = None
+    data_args["limit_train"] = None if args.limit_train <= 0 else args.limit_train
+    data_args["limit_val"] = None if args.limit_val <= 0 else args.limit_val
     data_args["num_workers"] = args.num_workers
     data_args["load_point_cloud"] = False
     data_args["scaled_unique"] = False
@@ -183,9 +235,20 @@ def main() -> int:
     model_args["freeze_backbone"] = True
 
     from autobrep.data.eccv_data import ECCVViewDataModule
+    from autobrep.inference.eccv_val_eval import EccvOfficialValCallback
     from autobrep.models.autoregressive import AutoBrepViewModel
 
     datamodule = ECCVViewDataModule(**data_args)
+    datasplit_path = (
+        Path(args.datasplit)
+        if args.datasplit
+        else Path(dataset_root) / "processed" / "datasplit.json"
+    )
+    print(
+        f"[train_eccv] parquet val = official datasplit val "
+        f"(datasplit={datasplit_path}, exists={datasplit_path.is_file()})",
+        file=sys.stderr,
+    )
     print(
         "[train_eccv] constructing model (load ckpt → then move to CUDA)...",
         file=sys.stderr,
@@ -214,7 +277,7 @@ def main() -> int:
                 raise RuntimeError(f"Training on {dev}, expected CUDA")
             print(
                 f"[train_eccv] on_train_start device={dev} "
-                f"max_steps={trainer.max_steps} "
+                f"max_epochs={trainer.max_epochs} max_steps={trainer.max_steps} "
                 f"allocated={torch.cuda.memory_allocated()/1e9:.2f}GB",
                 file=sys.stderr,
                 flush=True,
@@ -242,34 +305,55 @@ def main() -> int:
     )
     logger = TensorBoardLogger(save_dir=str(tb_dir), name="eccv_view")
 
+    official_val_cb = EccvOfficialValCallback(
+        dataset_root=dataset_root,
+        weight_folder=weight,
+        max_samples=args.official_val_samples,
+        every_n_val_checks=args.official_val_every,
+        eval_py=args.eval_py,
+        datasplit=datasplit_path if datasplit_path.is_file() else "",
+        enabled=not args.no_official_val,
+    )
+
     trainer_cfg = dict(cfg.get("trainer") or {})
     trainer_cfg.update(
         {
             "accelerator": "gpu",
             "devices": [0],
-            "max_epochs": -1,
-            "max_steps": int(args.max_steps),
-            "val_check_interval": int(args.val_check_interval),
-            "limit_val_batches": int(args.limit_val_batches),
-            "accumulate_grad_batches": args.accumulate_grad_batches,
             "default_root_dir": str(exp_dir),
             "logger": logger,
+            "accumulate_grad_batches": args.accumulate_grad_batches,
+            "limit_val_batches": int(args.limit_val_batches),
             "callbacks": [
                 ckpt_cb,
                 LearningRateMonitor(logging_interval="step"),
                 _CudaWatch(),
+                official_val_cb,
             ],
         }
     )
-    for k in ("profiler", "check_val_every_n_epoch"):
+    if use_epochs:
+        # IterableDataset: each epoch re-scans parquet (repeat passes on small ECCV set).
+        trainer_cfg["max_epochs"] = max_epochs
+        trainer_cfg["max_steps"] = -1
+        trainer_cfg["check_val_every_n_epoch"] = 1
+        trainer_cfg.pop("val_check_interval", None)
+    else:
+        trainer_cfg["max_epochs"] = -1
+        trainer_cfg["max_steps"] = max_steps
+        trainer_cfg["val_check_interval"] = int(args.val_check_interval)
+        trainer_cfg.pop("check_val_every_n_epoch", None)
+    for k in ("profiler",):
         trainer_cfg.pop(k, None)
 
     trainer = Trainer(**trainer_cfg)
     ckpt_path = args.resume_from or None
     print(
         f"[train_eccv] fit parquet={parquet_root} dataset_root={dataset_root} "
-        f"batch={args.batch_size} max_steps={args.max_steps} "
-        f"accum={args.accumulate_grad_batches} → {ckpt_dir}",
+        f"cond=view+dxf (no PC) batch={args.batch_size} "
+        f"schedule={schedule} max_epochs={max_epochs} max_steps={max_steps} "
+        f"accum={args.accumulate_grad_batches} official_val={not args.no_official_val} "
+        f"→ {ckpt_dir}",
         file=sys.stderr,
     )
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
@@ -281,8 +365,11 @@ def main() -> int:
         else None,
         "last_model_path": str(ckpt_dir / "last.ckpt"),
         "peak_cuda_GB": round(torch.cuda.max_memory_allocated() / 1e9, 3),
-        "max_steps": args.max_steps,
+        "max_steps": max_steps,
+        "max_epochs": max_epochs,
+        "schedule": schedule,
         "global_step": int(trainer.global_step),
+        "current_epoch": int(trainer.current_epoch),
     }
     (metrics_dir / "train_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"

@@ -52,6 +52,12 @@ LIMIT_SAMPLES="${LIMIT_SAMPLES:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:--1}"
 LIMIT_TRAIN="${LIMIT_TRAIN:--1}"
 LIMIT_VAL="${LIMIT_VAL:--1}"
+OFFICIAL_VAL_SAMPLES="${OFFICIAL_VAL_SAMPLES:-4}"
+OFFICIAL_VAL_EVERY="${OFFICIAL_VAL_EVERY:-1}"
+NO_OFFICIAL_VAL="${NO_OFFICIAL_VAL:-0}"
+EVAL_PY="${EVAL_PY:-/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py}"
+# ECCV view-cond default: epoch schedule on small set (override with --max-steps)
+ECCV_MAX_EPOCHS="${ECCV_MAX_EPOCHS:-50}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -97,6 +103,10 @@ while [[ $# -gt 0 ]]; do
     --max-epochs) MAX_EPOCHS="$2"; shift 2 ;;
     --limit-train) LIMIT_TRAIN="$2"; shift 2 ;;
     --limit-val) LIMIT_VAL="$2"; shift 2 ;;
+    --official-val-samples) OFFICIAL_VAL_SAMPLES="$2"; shift 2 ;;
+    --official-val-every) OFFICIAL_VAL_EVERY="$2"; shift 2 ;;
+    --no-official-val) NO_OFFICIAL_VAL="$2"; shift 2 ;;
+    --eval-py) EVAL_PY="$2"; shift 2 ;;
     --) shift; break ;;
     -*) echo "[run.sh] unknown option: $1" >&2; exit 1 ;;
     *) break ;;
@@ -144,15 +154,17 @@ case "${MODE}" in
       "weight_folder": "/data/hdd/outputs/AutoBrep",
       "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
       "batch_size": 1,
-      "max_steps": 10000,
+      "max_epochs": 50,
+      "max_steps": -1,
       "val_check_interval": 500,
       "limit_val_batches": 50,
       "lr": 0.0001,
-      "pc_num_points": 2048,
-      "pc_num_latents": 64,
       "view_num_latents": 64,
       "accumulate_grad_batches": 4,
-      "num_workers": 2
+      "num_workers": 2,
+      "official_val_samples": 4,
+      "official_val_every": 1,
+      "no_official_val": false
     },
     "infer": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
@@ -186,17 +198,20 @@ case "${MODE}" in
       "--weight-folder",
       "--data-dir",
       "--batch-size",
+      "--max-epochs",
       "--max-steps",
       "--val-check-interval",
       "--limit-val-batches",
       "--lr",
-      "--pc-num-points",
-      "--pc-num-latents",
       "--view-num-latents",
       "--accumulate-grad-batches",
       "--num-workers",
       "--gpu",
-      "--resume-from"
+      "--resume-from",
+      "--official-val-samples",
+      "--official-val-every",
+      "--no-official-val",
+      "--eval-py"
     ],
     "infer": [
       "--weight-folder",
@@ -233,15 +248,17 @@ case "${MODE}" in
       {"key": "weight_folder", "flag": "--weight-folder", "label": "预训练权重目录", "type": "text"},
       {"key": "data_dir", "flag": "--data-dir", "label": "数据根目录", "type": "text"},
       {"key": "batch_size", "flag": "--batch-size", "label": "batch_size", "type": "number"},
-      {"key": "max_steps", "flag": "--max-steps", "label": "优化器步数 max_steps", "type": "number"},
-      {"key": "val_check_interval", "flag": "--val-check-interval", "label": "每 N batch 验证", "type": "number"},
+      {"key": "max_epochs", "flag": "--max-epochs", "label": "训练 epoch 数（小数据集重复遍历）", "type": "number"},
+      {"key": "max_steps", "flag": "--max-steps", "label": "max_steps（-1=按 epoch；仅当 max_epochs≤0）", "type": "number"},
+      {"key": "val_check_interval", "flag": "--val-check-interval", "label": "step 模式下每 N batch 验证", "type": "number"},
       {"key": "limit_val_batches", "flag": "--limit-val-batches", "label": "每次验证 batch 上限", "type": "number"},
       {"key": "lr", "flag": "--lr", "label": "learning rate", "type": "number"},
-      {"key": "pc_num_points", "flag": "--pc-num-points", "label": "点云点数(PC)", "type": "number"},
-      {"key": "pc_num_latents", "flag": "--pc-num-latents", "label": "PC 条件 token 数", "type": "number"},
       {"key": "view_num_latents", "flag": "--view-num-latents", "label": "视图条件 token 数", "type": "number"},
       {"key": "accumulate_grad_batches", "flag": "--accumulate-grad-batches", "label": "梯度累积", "type": "number"},
-      {"key": "num_workers", "flag": "--num-workers", "label": "num_workers", "type": "number"}
+      {"key": "num_workers", "flag": "--num-workers", "label": "num_workers", "type": "number"},
+      {"key": "official_val_samples", "flag": "--official-val-samples", "label": "官方 val STEP 评测样本数", "type": "number"},
+      {"key": "official_val_every", "flag": "--official-val-every", "label": "每 N 次 val 跑官方评测", "type": "number"},
+      {"key": "no_official_val", "flag": "--no-official-val", "label": "关闭官方 STEP 评测", "type": "bool"}
     ],
     "infer": [
       {"key": "weight_folder", "flag": "--weight-folder", "label": "权重目录", "type": "text"},
@@ -298,6 +315,11 @@ JSON
 
     if [[ "${DATASET}" == "eccv2026ws-cad-data" || "${DATASET}" == "eccv2026ws-cad" || "${DATASET}" == "eccv" ]]; then
       DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/eccv2026ws-cad-data}"
+      # Prefer epoch schedule for small ECCV set (repeat parquet passes).
+      ECCV_EPOCHS="${MAX_EPOCHS}"
+      if [[ "${ECCV_EPOCHS}" == "-1" || -z "${ECCV_EPOCHS}" ]]; then
+        ECCV_EPOCHS="${ECCV_MAX_EPOCHS}"
+      fi
       TRAIN_ARGS=(
         --exp-dir "${EXP_DIR_ARG}"
         --data-dir "${DATA_ROOT}"
@@ -306,6 +328,7 @@ JSON
         --weight-folder "${WEIGHT_FOLDER}"
         --gpu "${GPU}"
         --batch-size "${BATCH_SIZE}"
+        --max-epochs "${ECCV_EPOCHS}"
         --max-steps "${MAX_STEPS}"
         --val-check-interval "${VAL_CHECK_INTERVAL}"
         --limit-val-batches "${LIMIT_VAL_BATCHES}"
@@ -313,6 +336,9 @@ JSON
         --view-num-latents "${VIEW_NUM_LATENTS}"
         --accumulate-grad-batches "${ACCUM_GRAD}"
         --num-workers "${NUM_WORKERS}"
+        --official-val-samples "${OFFICIAL_VAL_SAMPLES}"
+        --official-val-every "${OFFICIAL_VAL_EVERY}"
+        --eval-py "${EVAL_PY}"
       )
       if [[ -n "${OUTPUT_DIR_ARG}" ]]; then
         TRAIN_ARGS+=(--output-dir "${OUTPUT_DIR_ARG}")
@@ -322,6 +348,9 @@ JSON
       fi
       if [[ -n "${RESUME_FROM_ARG}" ]]; then
         TRAIN_ARGS+=(--resume-from "${RESUME_FROM_ARG}")
+      fi
+      if [[ "${NO_OFFICIAL_VAL}" == "1" || "${NO_OFFICIAL_VAL}" == "true" || "${NO_OFFICIAL_VAL}" == "True" ]]; then
+        TRAIN_ARGS+=(--no-official-val)
       fi
       echo "[run.sh] train eccv data=${DATA_ROOT} weight=${WEIGHT_FOLDER} → ${EXP_DIR_ARG}" >&2
       exec python -u "${REPO_DIR}/scripts/train_eccv_pipeline.py" "${TRAIN_ARGS[@]}"
