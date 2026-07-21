@@ -1,7 +1,7 @@
 id	label	repo_name	git_ref	branch	run_tag_default	status	notes
 pretrained	AutoBrep pretrained (uncond infer)	AutoBrep	pc-cond	pc-cond	pretrained	active	weight_folder=/data/hdd/outputs/AutoBrep; tag base=0e88b1b; uncond infer via run.sh on pc-cond
 pc-cond	AutoBrep point-cloud condition	AutoBrep	pc-cond	pc-cond	pc-cond	active	freeze AR/FSQ; train pc_encoder; infer: --pc-conditioned 1 --checkpoint <train_dir|ckpt> --point-cloud|.npy or --abc-stem
-eccv-base	AutoBrep-on-ECCV base (flat DXF)	AutoBrep	autobrep-eccv-base	eccv-cx-from-cond	eccv-base	active	BASE for autobrep_on_eccv; git tag autobrep-eccv-base (=d8023b5); view+flat DXF; from_condition; STEP@25%; bs=2 accum=2
+eccv-base	AutoBrep-on-ECCV base (flat DXF)	AutoBrep	autobrep-eccv-base	eccv-cx-from-cond	eccv-base	active	BASE for autobrep_on_eccv; tag autobrep-eccv-base; flat DXF; mid STEP=24 fixed, full@last; gen_batch=4; from_condition; bs=2
 eccv	ECCV2026 CAD view-conditioned SFT (legacy)	AutoBrep	eccv	eccv	eccv	active	legacy; prefer eccv-base
 eccv-cx-cond	ECCV view-cond + complexity-from-condition	AutoBrep	eccv-cx-from-cond	eccv-cx-from-cond	eccv-cx-cond	active	continues eccv-cx-from-cond tip (same line as base+)
-eccv-3view-geom	ECCV 3-view geometric TechDraw (DXF+SVG)	AutoBrep	eccv-3view-geom	eccv-3view-geom	eccv-3view-geom	active	DXF+SVG geometric prims; split sheet into 3 ortho views; 3 TD tokens; from_condition; STEP@25%
+eccv-3view-geom	ECCV 3-view geometric TechDraw (DXF+SVG)	AutoBrep	eccv-3view-geom	eccv-3view-geom	eccv-3view-geom	active	DXF+SVG 3-view geom; mid STEP=24, full@last; gen_batch=4; from_condition; STEP@25%
