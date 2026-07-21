@@ -239,6 +239,13 @@ def main() -> int:
     from autobrep.models.autoregressive import AutoBrepViewModel
 
     datamodule = ECCVViewDataModule(**data_args)
+    datamodule.setup("fit")
+    train_rows = len(datamodule._train_ds) if datamodule._train_ds is not None else -1
+    val_rows = len(datamodule._val_ds) if datamodule._val_ds is not None else -1
+    steps_per_epoch = max(
+        1,
+        (train_rows + args.batch_size - 1) // max(1, args.batch_size),
+    )
     datasplit_path = (
         Path(args.datasplit)
         if args.datasplit
@@ -248,6 +255,22 @@ def main() -> int:
         f"[train_eccv] parquet val = official datasplit val "
         f"(datasplit={datasplit_path}, exists={datasplit_path.is_file()})",
         file=sys.stderr,
+    )
+    print(
+        f"[train_eccv] epoch size: train_rows={train_rows} val_rows={val_rows} "
+        f"batch={args.batch_size} → ~{steps_per_epoch} train batches/epoch "
+        f"(accum={args.accumulate_grad_batches} → "
+        f"~{steps_per_epoch // max(1, args.accumulate_grad_batches)} opt steps/epoch)",
+        file=sys.stderr,
+    )
+    meta["train_rows"] = train_rows
+    meta["val_rows"] = val_rows
+    meta["steps_per_epoch"] = steps_per_epoch
+    meta["opt_steps_per_epoch_est"] = steps_per_epoch // max(
+        1, args.accumulate_grad_batches
+    )
+    (metrics_dir / "train_config.json").write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     print(
         "[train_eccv] constructing model (load ckpt → then move to CUDA)...",

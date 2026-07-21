@@ -293,6 +293,22 @@ class EccvOfficialValCallback(Callback):
         )
         return self._surface_fsq, self._edge_fsq
 
+    def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        if not self.enabled:
+            print("[eccv_val] disabled (--no-official-val)", flush=True)
+            return
+        print(
+            f"[eccv_val] callback ready: runs after each Lightning validation "
+            f"(every_n={self.every_n_val_checks}, samples={self.max_samples}, "
+            f"eval_py={self.eval_py})",
+            flush=True,
+        )
+        sample_ids = self._ensure_ids()
+        print(
+            f"[eccv_val] first official ids: {sample_ids[: min(5, len(sample_ids))]}",
+            flush=True,
+        )
+
     def on_validation_epoch_end(
         self, trainer: Trainer, pl_module: LightningModule
     ) -> None:

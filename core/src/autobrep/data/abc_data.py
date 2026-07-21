@@ -50,6 +50,7 @@ class ParquetRowIterable(IterableDataset):
         shuffle_buffer_size: Optional[int] = None,
         shuffle_seed: int = 9876,
         batch_rows_read: int = 4096,
+        length: Optional[int] = None,
     ):
         super().__init__()
         self.paths = paths
@@ -64,6 +65,34 @@ class ParquetRowIterable(IterableDataset):
         self.shuffle_buffer_size = shuffle_buffer_size
         self.shuffle_seed = shuffle_seed
         self.batch_rows_read = batch_rows_read
+        # Known length so Lightning can schedule epochs/val (IterableDataset otherwise shows N/?).
+        self._length = self._resolve_length(length)
+
+    @staticmethod
+    def count_parquet_rows(
+        paths: str, filter_expr: Optional[pc.Expression] = None
+    ) -> int:
+        dataset = ds.dataset(paths, format="parquet")
+        return int(dataset.count_rows(filter=filter_expr))
+
+    def _resolve_length(self, length: Optional[int]) -> Optional[int]:
+        if length is not None:
+            n = int(length)
+        else:
+            try:
+                n = self.count_parquet_rows(self.paths, self.filter_expr)
+            except Exception:  # noqa: BLE001
+                return None
+        if self.limit is not None:
+            n = min(n, int(self.limit))
+        return max(0, n)
+
+    def __len__(self) -> int:
+        if self._length is None:
+            raise TypeError(
+                f"{type(self).__name__} has unknown length; pass length= or fix parquet path"
+            )
+        return int(self._length)
 
     def _iter_rows(self) -> Iterator[Dict[str, Any]]:
         dataset = ds.dataset(self.paths, format="parquet")
@@ -204,8 +233,22 @@ class BaseDataModule(abc.ABC, LightningDataModule):
         expr = self._filter_expr()
 
         if stage in (None, "fit"):
+            train_paths = f"{self.hparams.data_root}/train"
+            val_paths = f"{self.hparams.data_root}/val"
+            train_len = ParquetRowIterable.count_parquet_rows(train_paths, expr)
+            val_len = ParquetRowIterable.count_parquet_rows(val_paths, expr)
+            if self.hparams.limit_train is not None:
+                train_len = min(train_len, int(self.hparams.limit_train))
+            if self.hparams.limit_val is not None:
+                val_len = min(val_len, int(self.hparams.limit_val))
+            print(
+                f"[data] sized IterableDataset train_rows={train_len} "
+                f"val_rows={val_len} (arrow filter; python pre_filter may drop a few)",
+                flush=True,
+            )
+
             self._train_ds = ParquetRowIterable(
-                paths=f"{self.hparams.data_root}/train",
+                paths=train_paths,
                 columns=cols,
                 filter_expr=expr,
                 pre_filter=self.pre_filter,
@@ -217,10 +260,11 @@ class BaseDataModule(abc.ABC, LightningDataModule):
                 shuffle_buffer_size=self.hparams.buffer_size,
                 shuffle_seed=9876,
                 batch_rows_read=self.hparams.rows_per_arrow_batch,
+                length=train_len,
             )
 
             self._val_ds = ParquetRowIterable(
-                paths=f"{self.hparams.data_root}/val",
+                paths=val_paths,
                 columns=cols,
                 filter_expr=expr,
                 pre_filter=self.pre_filter,
@@ -232,6 +276,7 @@ class BaseDataModule(abc.ABC, LightningDataModule):
                 shuffle_buffer_size=None,
                 shuffle_seed=9876,
                 batch_rows_read=self.hparams.rows_per_arrow_batch,
+                length=val_len,
             )
 
         if self.hparams.materialize:
