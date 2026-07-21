@@ -6,10 +6,20 @@
 
 | 项 | 值 |
 |----|-----|
-| 模型条目 | `models.tsv` → `eccv`（`git_ref=eccv`） |
+| 模型条目 | `models.tsv` → `eccv`（固定 medium）/ `eccv-cx-cond`（条件推断复杂度，`git_ref=eccv-cx-from-cond`） |
 | 数据集 ID | `eccv2026ws-cad-data`（与 `DATA_DIR/registry/datasets.tsv` 一致） |
 | task | `gen`（亦声明 `cad`） |
 | processed | `{DATA_DIR}/eccv2026ws-cad-data/processed/autobrep` |
+
+## 复杂度 token
+
+| 阶段 | 行为 |
+|------|------|
+| **训练** | parquet **不存**离散序列；dataloader 按 GT 面数写 BOM…EOM（`<25` easy / `<50` mid / else hard；`meta_ratio` 下约 20% uncond） |
+| **推理 `eccv`** | 固定 `--complexity medium`（或 easy/hard/random） |
+| **推理 `eccv-cx-cond`** | `--complexity from_condition`：view+DXF → prepend 后，在 `BOS,BOM` 上做一步 AR，在 `{easy,mid,hard}` 上 argmax，再拼完整 prompt 生成 |
+
+训练时 prepend 与复杂度 token 同属一条 CE 序列，因此 `P(C\|cond)` 被联合学习；`from_condition` 即在推理时取该条件分布。
 
 ## 条件模态（重要）
 

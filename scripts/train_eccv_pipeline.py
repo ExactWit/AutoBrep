@@ -56,6 +56,21 @@ def parse_args() -> argparse.Namespace:
         "--eval-py",
         default="/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py",
     )
+    p.add_argument(
+        "--complexity",
+        default="from_condition",
+        choices=[
+            "from_condition",
+            "auto",
+            "cond",
+            "easy",
+            "medium",
+            "hard",
+            "random",
+        ],
+        help="Official-val / infer complexity token: from_condition=AR given view+DXF; "
+        "easy/medium/hard/random=fixed (legacy). Train still uses GT face-count meta.",
+    )
     return p.parse_args()
 
 
@@ -193,6 +208,7 @@ def main() -> int:
         "official_val": not args.no_official_val,
         "official_val_samples": args.official_val_samples,
         "official_val_every": args.official_val_every,
+        "complexity": args.complexity,
         "eval_py": args.eval_py,
         "datasplit": args.datasplit
         or str(Path(dataset_root) / "processed" / "datasplit.json"),
@@ -336,6 +352,7 @@ def main() -> int:
         eval_py=args.eval_py,
         datasplit=datasplit_path if datasplit_path.is_file() else "",
         parquet_root=parquet_root,
+        complexity=args.complexity,
         enabled=not args.no_official_val,
     )
 

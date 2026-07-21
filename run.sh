@@ -20,7 +20,7 @@ WEIGHT_FOLDER="${WEIGHT_FOLDER:-/data/hdd/outputs/AutoBrep}"
 GPU="${GPU:-0}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 NUM_BATCHES="${NUM_BATCHES:-10}"
-COMPLEXITY="${COMPLEXITY:-medium}"
+COMPLEXITY="${COMPLEXITY:-from_condition}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 TOP_P="${TOP_P:-0.9}"
 VERTEX_THRESHOLD="${VERTEX_THRESHOLD:-0.002}"
@@ -164,14 +164,15 @@ case "${MODE}" in
       "num_workers": 2,
       "official_val_samples": -1,
       "official_val_every": 1,
-      "no_official_val": false
+      "no_official_val": false,
+      "complexity": "from_condition"
     },
     "infer": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
       "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
       "batch_size": 1,
       "num_batches": 10,
-      "complexity": "medium",
+      "complexity": "from_condition",
       "temperature": 1.0,
       "top_p": 0.9,
       "vertex_threshold": 0.002,
@@ -211,7 +212,8 @@ case "${MODE}" in
       "--official-val-samples",
       "--official-val-every",
       "--no-official-val",
-      "--eval-py"
+      "--eval-py",
+      "--complexity"
     ],
     "infer": [
       "--weight-folder",
@@ -258,14 +260,15 @@ case "${MODE}" in
       {"key": "num_workers", "flag": "--num-workers", "label": "num_workers", "type": "number"},
       {"key": "official_val_samples", "flag": "--official-val-samples", "label": "官方 val STEP 数(≤0=全量~694)", "type": "number"},
       {"key": "official_val_every", "flag": "--official-val-every", "label": "每 N 次 val 跑官方评测", "type": "number"},
-      {"key": "no_official_val", "flag": "--no-official-val", "label": "关闭官方 STEP 评测", "type": "bool"}
+      {"key": "no_official_val", "flag": "--no-official-val", "label": "关闭官方 STEP 评测", "type": "bool"},
+      {"key": "complexity", "flag": "--complexity", "label": "复杂度 token（训练仍用 GT 面数；推理/官方val）", "type": "select", "choices": ["from_condition", "easy", "medium", "hard", "random"]}
     ],
     "infer": [
       {"key": "weight_folder", "flag": "--weight-folder", "label": "权重目录", "type": "text"},
       {"key": "data_dir", "flag": "--data-dir", "label": "数据根目录", "type": "text"},
       {"key": "batch_size", "flag": "--batch-size", "label": "batch_size", "type": "number"},
       {"key": "num_batches", "flag": "--num-batches", "label": "采样批次数", "type": "number"},
-      {"key": "complexity", "flag": "--complexity", "label": "复杂度", "type": "select", "choices": ["random", "easy", "medium", "hard"]},
+      {"key": "complexity", "flag": "--complexity", "label": "复杂度", "type": "select", "choices": ["from_condition", "random", "easy", "medium", "hard"]},
       {"key": "temperature", "flag": "--temperature", "label": "temperature", "type": "number"},
       {"key": "top_p", "flag": "--top-p", "label": "top_p", "type": "number"},
       {"key": "vertex_threshold", "flag": "--vertex-threshold", "label": "vertex_threshold", "type": "number"},
@@ -339,6 +342,7 @@ JSON
         --official-val-samples "${OFFICIAL_VAL_SAMPLES}"
         --official-val-every "${OFFICIAL_VAL_EVERY}"
         --eval-py "${EVAL_PY}"
+        --complexity "${COMPLEXITY}"
       )
       if [[ -n "${OUTPUT_DIR_ARG}" ]]; then
         TRAIN_ARGS+=(--output-dir "${OUTPUT_DIR_ARG}")

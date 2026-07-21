@@ -117,28 +117,7 @@ class AutoRegressiveSampler(LightningModule):
         Returns:
             samples: A list of sampled tokens
         """
-        if config.hyper_parameters.complexity == "random": 
-            complexity = 17
-        elif config.hyper_parameters.complexity == "easy": 
-            complexity = 14
-        elif config.hyper_parameters.complexity == "medium": 
-            complexity = 15
-        elif config.hyper_parameters.complexity == "hard": 
-            complexity = 16
-
-        prompt = (
-            torch.LongTensor([
-                MMTokenIndex.BOS.value, 
-                MMTokenIndex.BOM.value, 
-                complexity, 
-                MMTokenIndex.EOM.value,
-                MMTokenIndex.BOC.value, 
-                ] * batch_size
-            )
-            .reshape(batch_size, 5)
-            .to(self.transformer.device)
-        )
-
+        cx_mode = str(config.hyper_parameters.complexity).lower()
         gen_kwargs = {}
         if self.view_conditioned:
             if images is None:
@@ -162,7 +141,55 @@ class AutoRegressiveSampler(LightningModule):
             gen_kwargs["point_cloud"] = point_cloud.to(
                 device=self.transformer.device, dtype=torch.float16
             )
-       
+
+        if cx_mode in ("from_condition", "auto", "cond"):
+            if not self.view_conditioned:
+                raise ValueError(
+                    "complexity=from_condition requires view_conditioned sampler"
+                )
+            # Per-sample AR next-token among {easy,mid,hard} given view+DXF prepend.
+            cx_ids = []
+            for b in range(batch_size):
+                c = int(
+                    self.transformer.predict_complexity_from_condition(
+                        images=gen_kwargs["images"][b : b + 1],
+                        prim_types=gen_kwargs["prim_types"][b : b + 1],
+                        prim_linetypes=gen_kwargs["prim_linetypes"][b : b + 1],
+                        prim_geom=gen_kwargs["prim_geom"][b : b + 1],
+                        prim_mask=gen_kwargs["prim_mask"][b : b + 1],
+                    )
+                )
+                cx_ids.append(c)
+        else:
+            if cx_mode == "random":
+                complexity = 17
+            elif cx_mode == "easy":
+                complexity = 14
+            elif cx_mode == "medium":
+                complexity = 15
+            elif cx_mode == "hard":
+                complexity = 16
+            else:
+                complexity = 15
+            cx_ids = [complexity] * batch_size
+
+        prompt_rows = []
+        for c in cx_ids:
+            prompt_rows.extend(
+                [
+                    MMTokenIndex.BOS.value,
+                    MMTokenIndex.BOM.value,
+                    c,
+                    MMTokenIndex.EOM.value,
+                    MMTokenIndex.BOC.value,
+                ]
+            )
+        prompt = (
+            torch.LongTensor(prompt_rows)
+            .reshape(batch_size, 5)
+            .to(self.transformer.device)
+        )
+
         with timer(f"Total Time to generate B-Reps: %s seconds"):
             samples = self.transformer.generate(
                 prompt, 
@@ -928,6 +955,55 @@ class AutoBrepViewModel(AutoBrepModel):
         return self.view_encoder(
             images, prim_types, prim_linetypes, prim_geom, prim_mask
         )
+
+    @torch.inference_mode()
+    def predict_complexity_from_condition(
+        self,
+        images: torch.Tensor,
+        prim_types: torch.Tensor,
+        prim_linetypes: torch.Tensor,
+        prim_geom: torch.Tensor,
+        prim_mask: torch.Tensor,
+        *,
+        allow_uncond: bool = False,
+    ) -> int:
+        """
+        Infer complexity token from view+DXF prepend via one AR step after BOS,BOM.
+
+        Training already places GT face-count complexity after BOM in the discrete
+        sequence while prepend_embeds condition the same Transformer, so P(C|cond)
+        is learned by CE. At infer we take argmax over {easy,mid,hard} (+ optional
+        uncond).
+        """
+        device = next(self.parameters()).device
+        prepend = self.encode_views(
+            images, prim_types, prim_linetypes, prim_geom, prim_mask
+        )
+        seed = torch.tensor(
+            [[MMTokenIndex.BOS.value, MMTokenIndex.BOM.value]],
+            device=device,
+            dtype=torch.long,
+        )
+        if seed.shape[0] != prepend.shape[0]:
+            seed = seed.repeat(prepend.shape[0], 1)
+
+        logits, _ = self.cad_gpt.ar_decoder.net(
+            seed,
+            return_intermediates=True,
+            prepend_embeds=prepend,
+        )
+        next_logits = logits[:, -1]  # (B, vocab)
+        allowed = [
+            MMTokenIndex.GEN_EASY.value,
+            MMTokenIndex.GEN_MID.value,
+            MMTokenIndex.GEN_HARD.value,
+        ]
+        if allow_uncond:
+            allowed.append(MMTokenIndex.GEN_UNCOND.value)
+        allowed_t = torch.tensor(allowed, device=device, dtype=torch.long)
+        pick = next_logits.index_select(-1, allowed_t).argmax(dim=-1)
+        # batch>1: return first; callers that need all should loop / extend later
+        return int(allowed_t[pick[0]].item())
 
     def common_step(self, batch):
         token, face_ncs, edge_ncs = (

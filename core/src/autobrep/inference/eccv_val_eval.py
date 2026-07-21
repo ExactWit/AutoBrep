@@ -78,6 +78,61 @@ def gt_step_path(dataset_root: Path, sample_id: str) -> Path:
     return Path(dataset_root) / "train" / "target_step" / f"{sample_id}.step"
 
 
+def resolve_complexity_id(
+    complexity: str,
+    *,
+    transformer: LightningModule | None = None,
+    images: torch.Tensor | None = None,
+    prim_types: torch.Tensor | None = None,
+    prim_linetypes: torch.Tensor | None = None,
+    prim_geom: torch.Tensor | None = None,
+    prim_mask: torch.Tensor | None = None,
+) -> tuple[int, str]:
+    """
+    Map complexity mode → token id.
+
+    Modes:
+      easy/medium/hard/random — fixed tokens (legacy infer)
+      from_condition|auto|cond — AR next-token given view+DXF prepend
+    """
+    mode = str(complexity or "medium").lower().strip()
+    fixed = {
+        "easy": MMTokenIndex.GEN_EASY.value,
+        "medium": MMTokenIndex.GEN_MID.value,
+        "hard": MMTokenIndex.GEN_HARD.value,
+        "random": MMTokenIndex.GEN_UNCOND.value,
+        "uncond": MMTokenIndex.GEN_UNCOND.value,
+    }
+    if mode in ("from_condition", "auto", "cond"):
+        if transformer is None or images is None or prim_types is None:
+            raise ValueError("from_condition requires transformer + view/DXF tensors")
+        predict = getattr(transformer, "predict_complexity_from_condition", None)
+        if predict is None:
+            raise TypeError(
+                "transformer lacks predict_complexity_from_condition "
+                "(need AutoBrepViewModel)"
+            )
+        cid = int(
+            predict(
+                images,
+                prim_types,
+                prim_linetypes,
+                prim_geom,
+                prim_mask,
+            )
+        )
+        name = {
+            MMTokenIndex.GEN_EASY.value: "easy",
+            MMTokenIndex.GEN_MID.value: "medium",
+            MMTokenIndex.GEN_HARD.value: "hard",
+            MMTokenIndex.GEN_UNCOND.value: "random",
+        }.get(cid, str(cid))
+        return cid, f"from_condition:{name}"
+    if mode in fixed:
+        return fixed[mode], mode
+    return MMTokenIndex.GEN_MID.value, f"fallback_medium({mode})"
+
+
 def generate_pred_step(
     *,
     transformer: LightningModule,
@@ -87,7 +142,7 @@ def generate_pred_step(
     dataset_root: Path,
     sample_id: str,
     out_step: Path,
-    complexity: str = "medium",
+    complexity: str = "from_condition",
     temperature: float = 1.0,
     top_p: float = 0.9,
     vertex_threshold: float = 0.002,
@@ -106,38 +161,38 @@ def generate_pred_step(
     prim_geom = dxf["prim_geom"].to(device=device, dtype=torch.float16)
     prim_mask = dxf["prim_mask"].to(device)
 
-    complexity_id = {
-        "easy": 14,
-        "medium": 15,
-        "hard": 16,
-        "random": 17,
-    }.get(complexity, 15)
-
-    prompt = (
-        torch.LongTensor(
-            [
-                MMTokenIndex.BOS.value,
-                MMTokenIndex.BOM.value,
-                complexity_id,
-                MMTokenIndex.EOM.value,
-                MMTokenIndex.BOC.value,
-            ]
-        )
-        .reshape(1, 5)
-        .to(device)
-    )
-
     was_training = transformer.training
     transformer.eval()
     try:
         with torch.no_grad():
-            # Exit any Lightning autocast; AR sampling expects float16 weights path.
             autocast_ctx = (
                 torch.autocast(device_type="cuda", enabled=False)
                 if device.type == "cuda"
                 else torch.autocast(device_type="cpu", enabled=False)
             )
             with autocast_ctx:
+                complexity_id, complexity_resolved = resolve_complexity_id(
+                    complexity,
+                    transformer=transformer,
+                    images=images,
+                    prim_types=prim_types,
+                    prim_linetypes=prim_linetypes,
+                    prim_geom=prim_geom,
+                    prim_mask=prim_mask,
+                )
+                prompt = (
+                    torch.LongTensor(
+                        [
+                            MMTokenIndex.BOS.value,
+                            MMTokenIndex.BOM.value,
+                            complexity_id,
+                            MMTokenIndex.EOM.value,
+                            MMTokenIndex.BOC.value,
+                        ]
+                    )
+                    .reshape(1, 5)
+                    .to(device)
+                )
                 samples = transformer.generate(
                     prompt,
                     temperature,
@@ -165,6 +220,8 @@ def generate_pred_step(
                 "sample_id": sample_id,
                 "ok": False,
                 "error": "decode_failed",
+                "complexity": complexity_resolved,
+                "complexity_id": complexity_id,
                 **meta,
             }
 
@@ -185,6 +242,8 @@ def generate_pred_step(
                 "sample_id": sample_id,
                 "ok": False,
                 "error": "rebuild_failed",
+                "complexity": complexity_resolved,
+                "complexity_id": complexity_id,
                 **meta,
             }
 
@@ -195,6 +254,8 @@ def generate_pred_step(
             "ok": True,
             "step": str(out_step),
             "num_faces": int(cad_list[0].face_pos_cad.shape[0]),
+            "complexity": complexity_resolved,
+            "complexity_id": complexity_id,
             **meta,
         }
     except Exception as exc:  # noqa: BLE001
@@ -303,7 +364,7 @@ class EccvOfficialValCallback(Callback):
         work_dir: str | Path = "",
         datasplit: str | Path = "",
         parquet_root: str | Path = "",
-        complexity: str = "medium",
+        complexity: str = "from_condition",
         temperature: float = 1.0,
         top_p: float = 0.9,
         enabled: bool = True,
