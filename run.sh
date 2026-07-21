@@ -18,7 +18,7 @@ TASK_ARG=""
 CHECKPOINT_ARG=""
 WEIGHT_FOLDER="${WEIGHT_FOLDER:-/data/hdd/outputs/AutoBrep}"
 GPU="${GPU:-0}"
-BATCH_SIZE="${BATCH_SIZE:-8}"
+BATCH_SIZE="${BATCH_SIZE:-2}"
 NUM_BATCHES="${NUM_BATCHES:-10}"
 COMPLEXITY="${COMPLEXITY:-from_condition}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
@@ -33,12 +33,12 @@ FORMAT_ARG="${FORMAT:-step}"
 RESUME_FROM_ARG=""
 MAX_STEPS="${MAX_STEPS:-10000}"
 VAL_CHECK_INTERVAL="${VAL_CHECK_INTERVAL:-500}"
-LIMIT_VAL_BATCHES="${LIMIT_VAL_BATCHES:-50}"
+LIMIT_VAL_BATCHES="${LIMIT_VAL_BATCHES:-100}"
 LR="${LR:-0.0001}"
 PC_NUM_POINTS="${PC_NUM_POINTS:-2048}"
 PC_NUM_LATENTS="${PC_NUM_LATENTS:-64}"
 VIEW_NUM_LATENTS="${VIEW_NUM_LATENTS:-64}"
-ACCUM_GRAD="${ACCUM_GRAD:-4}"
+ACCUM_GRAD="${ACCUM_GRAD:-2}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 PC_CONDITIONED="${PC_CONDITIONED:-0}"
 VIEW_CONDITIONED="${VIEW_CONDITIONED:-0}"
@@ -53,7 +53,8 @@ MAX_EPOCHS="${MAX_EPOCHS:--1}"
 LIMIT_TRAIN="${LIMIT_TRAIN:--1}"
 LIMIT_VAL="${LIMIT_VAL:--1}"
 OFFICIAL_VAL_SAMPLES="${OFFICIAL_VAL_SAMPLES:--1}"
-OFFICIAL_VAL_EVERY="${OFFICIAL_VAL_EVERY:-1}"
+OFFICIAL_VAL_EVERY="${OFFICIAL_VAL_EVERY:-0}"
+OFFICIAL_VAL_EPOCH_FRAC="${OFFICIAL_VAL_EPOCH_FRAC:-0.25}"
 NO_OFFICIAL_VAL="${NO_OFFICIAL_VAL:-0}"
 EVAL_PY="${EVAL_PY:-/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py}"
 # ECCV view-cond default: epoch schedule on small set (override with --max-steps)
@@ -105,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --limit-val) LIMIT_VAL="$2"; shift 2 ;;
     --official-val-samples) OFFICIAL_VAL_SAMPLES="$2"; shift 2 ;;
     --official-val-every) OFFICIAL_VAL_EVERY="$2"; shift 2 ;;
+    --official-val-epoch-frac) OFFICIAL_VAL_EPOCH_FRAC="$2"; shift 2 ;;
     --no-official-val) NO_OFFICIAL_VAL="$2"; shift 2 ;;
     --eval-py) EVAL_PY="$2"; shift 2 ;;
     --) shift; break ;;
@@ -153,17 +155,18 @@ case "${MODE}" in
     "train": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
       "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
-      "batch_size": 1,
+      "batch_size": 2,
       "max_epochs": 50,
       "max_steps": -1,
       "val_check_interval": 500,
-      "limit_val_batches": 50,
+      "limit_val_batches": 100,
       "lr": 0.0001,
       "view_num_latents": 64,
-      "accumulate_grad_batches": 4,
+      "accumulate_grad_batches": 2,
       "num_workers": 2,
       "official_val_samples": -1,
-      "official_val_every": 1,
+      "official_val_every": 0,
+      "official_val_epoch_frac": 0.25,
       "no_official_val": false,
       "complexity": "from_condition"
     },
@@ -211,6 +214,7 @@ case "${MODE}" in
       "--resume-from",
       "--official-val-samples",
       "--official-val-every",
+      "--official-val-epoch-frac",
       "--no-official-val",
       "--eval-py",
       "--complexity"
@@ -259,7 +263,8 @@ case "${MODE}" in
       {"key": "accumulate_grad_batches", "flag": "--accumulate-grad-batches", "label": "梯度累积", "type": "number"},
       {"key": "num_workers", "flag": "--num-workers", "label": "num_workers", "type": "number"},
       {"key": "official_val_samples", "flag": "--official-val-samples", "label": "官方 val STEP 数(≤0=全量~694)", "type": "number"},
-      {"key": "official_val_every", "flag": "--official-val-every", "label": "每 N 次 val 跑官方评测", "type": "number"},
+      {"key": "official_val_every", "flag": "--official-val-every", "label": "STEP 每 N epoch（0=用 frac 里程碑）", "type": "number"},
+      {"key": "official_val_epoch_frac", "flag": "--official-val-epoch-frac", "label": "STEP 里程碑比例(0.25→25/50/75/100%)", "type": "number"},
       {"key": "no_official_val", "flag": "--no-official-val", "label": "关闭官方 STEP 评测", "type": "bool"},
       {"key": "complexity", "flag": "--complexity", "label": "复杂度 token（训练仍用 GT 面数；推理/官方val）", "type": "select", "choices": ["from_condition", "easy", "medium", "hard", "random"]}
     ],
@@ -341,6 +346,7 @@ JSON
         --num-workers "${NUM_WORKERS}"
         --official-val-samples "${OFFICIAL_VAL_SAMPLES}"
         --official-val-every "${OFFICIAL_VAL_EVERY}"
+        --official-val-epoch-frac "${OFFICIAL_VAL_EPOCH_FRAC}"
         --eval-py "${EVAL_PY}"
         --complexity "${COMPLEXITY}"
       )

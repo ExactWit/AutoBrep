@@ -348,8 +348,11 @@ def prepare_gt_pred_dirs(
 
 class EccvOfficialValCallback(Callback):
     """
-    After selected validation checks: generate STEP on official val ids,
+    After selected validation epochs: generate STEP on official val ids,
     run challenge eval.py, log Surface/Edge/Vertex/Topo F1 + Summary to TB.
+
+    CE ``val_loss`` still runs every Lightning val epoch; STEP gen is sparse
+    (default: at 25%/50%/75%/100% of ``max_epochs``).
     """
 
     def __init__(
@@ -359,7 +362,9 @@ class EccvOfficialValCallback(Callback):
         weight_folder: str | Path,
         sample_ids: Optional[Sequence[str]] = None,
         max_samples: int = -1,
-        every_n_val_checks: int = 1,
+        every_n_val_checks: int = 0,
+        epoch_frac: float = 0.25,
+        max_epochs: int = 50,
         eval_py: str | Path = DEFAULT_EVAL_PY,
         work_dir: str | Path = "",
         datasplit: str | Path = "",
@@ -373,7 +378,10 @@ class EccvOfficialValCallback(Callback):
         self.dataset_root = Path(dataset_root)
         self.weight_folder = Path(weight_folder)
         self.max_samples = int(max_samples)
-        self.every_n_val_checks = max(1, int(every_n_val_checks))
+        # >0: every N completed epochs; <=0: use epoch_frac milestones
+        self.every_n_val_checks = int(every_n_val_checks)
+        self.epoch_frac = float(epoch_frac)
+        self.max_epochs = int(max_epochs)
         self.eval_py = Path(eval_py)
         self.work_dir = Path(work_dir) if work_dir else None
         self.datasplit = Path(datasplit) if datasplit else None
@@ -386,6 +394,32 @@ class EccvOfficialValCallback(Callback):
         self._val_check_count = 0
         self._surface_fsq: Optional[SurfaceFSQVAE] = None
         self._edge_fsq: Optional[EdgeFSQVAE] = None
+        self._milestones = self._compute_milestones()
+
+    def _compute_milestones(self) -> set[int]:
+        """1-based epoch indices that should run official STEP eval."""
+        if self.every_n_val_checks > 0:
+            return set()
+        me = max(1, self.max_epochs)
+        frac = self.epoch_frac if self.epoch_frac > 0 else 0.25
+        marks: set[int] = set()
+        k = 1
+        while k * frac < 1.0 - 1e-9:
+            marks.add(max(1, int(round(k * frac * me))))
+            k += 1
+        marks.add(me)
+        return marks
+
+    def _should_run_official(self, trainer: Trainer) -> bool:
+        # Lightning current_epoch is 0-based for the epoch that just validated.
+        epoch_1based = int(trainer.current_epoch) + 1
+        if self.every_n_val_checks > 0:
+            return epoch_1based % self.every_n_val_checks == 0
+        me = int(trainer.max_epochs) if int(trainer.max_epochs or 0) > 0 else self.max_epochs
+        if me != self.max_epochs:
+            self.max_epochs = me
+            self._milestones = self._compute_milestones()
+        return epoch_1based in self._milestones
 
     def _ensure_ids(self) -> list[str]:
         if self._sample_ids is None:
@@ -422,10 +456,20 @@ class EccvOfficialValCallback(Callback):
             print("[eccv_val] disabled (--no-official-val)", flush=True)
             return
         sample_ids = self._ensure_ids()
+        me = int(trainer.max_epochs) if int(trainer.max_epochs or 0) > 0 else self.max_epochs
+        self.max_epochs = me
+        self._milestones = self._compute_milestones()
+        if self.every_n_val_checks > 0:
+            sched = f"every {self.every_n_val_checks} epoch(s)"
+        else:
+            sched = (
+                f"milestones={sorted(self._milestones)} "
+                f"(frac={self.epoch_frac}, max_epochs={me})"
+            )
         print(
-            f"[eccv_val] callback ready: conditioned STEP gen on "
-            f"official∩processed val (n={len(sample_ids)}, "
-            f"max_samples={self.max_samples}, every_n={self.every_n_val_checks})",
+            f"[eccv_val] callback ready: STEP gen on official∩processed val "
+            f"(n={len(sample_ids)}, max_samples={self.max_samples}); "
+            f"CE val every epoch; STEP {sched}",
             flush=True,
         )
         print(
@@ -441,7 +485,7 @@ class EccvOfficialValCallback(Callback):
         if trainer.sanity_checking:
             return
         self._val_check_count += 1
-        if self._val_check_count % self.every_n_val_checks != 0:
+        if not self._should_run_official(trainer):
             return
 
         sample_ids = self._ensure_ids()
@@ -452,7 +496,8 @@ class EccvOfficialValCallback(Callback):
         work = self.work_dir or (
             Path(trainer.default_root_dir)
             / "metrics"
-            / f"official_val_step{int(trainer.global_step):06d}"
+            / f"official_val_epoch{int(trainer.current_epoch)+1:03d}"
+            f"_step{int(trainer.global_step):06d}"
         )
         work.mkdir(parents=True, exist_ok=True)
         gt_dir, pred_dir, ok_ids = prepare_gt_pred_dirs(
@@ -464,7 +509,8 @@ class EccvOfficialValCallback(Callback):
 
         print(
             f"[eccv_val] generating {len(ok_ids)} STEPs on official val "
-            f"(step={trainer.global_step}) → {work}",
+            f"(epoch={int(trainer.current_epoch)+1}/{self.max_epochs}, "
+            f"step={trainer.global_step}) → {work}",
             flush=True,
         )
         was_training = pl_module.training

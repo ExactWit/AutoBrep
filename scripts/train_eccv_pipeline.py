@@ -20,13 +20,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--task", default="gen")
     p.add_argument("--weight-folder", default="/data/hdd/outputs/AutoBrep")
     p.add_argument("--gpu", default="0")
-    p.add_argument("--batch-size", type=int, default=1)
+    p.add_argument("--batch-size", type=int, default=2)
     p.add_argument("--max-steps", type=int, default=10000)
     p.add_argument("--val-check-interval", type=int, default=500)
-    p.add_argument("--limit-val-batches", type=int, default=50)
+    p.add_argument(
+        "--limit-val-batches",
+        type=int,
+        default=100,
+        help="CE val batches per epoch (non-STEP); larger with bigger batch_size",
+    )
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--view-num-latents", type=int, default=64)
-    p.add_argument("--accumulate-grad-batches", type=int, default=4)
+    p.add_argument("--accumulate-grad-batches", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
     p.add_argument("--config", default="")
@@ -44,8 +49,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--official-val-every",
         type=int,
-        default=1,
-        help="Run official STEP eval every N Lightning val checks (1=every val)",
+        default=0,
+        help="If >0: run STEP official eval every N epochs. "
+        "If <=0: use --official-val-epoch-frac milestones (default).",
+    )
+    p.add_argument(
+        "--official-val-epoch-frac",
+        type=float,
+        default=0.25,
+        help="When official-val-every<=0: STEP eval at 25%%/50%%/75%%/100%% of max_epochs "
+        "(CE val_loss still every epoch).",
     )
     p.add_argument(
         "--no-official-val",
@@ -208,6 +221,7 @@ def main() -> int:
         "official_val": not args.no_official_val,
         "official_val_samples": args.official_val_samples,
         "official_val_every": args.official_val_every,
+        "official_val_epoch_frac": args.official_val_epoch_frac,
         "complexity": args.complexity,
         "eval_py": args.eval_py,
         "datasplit": args.datasplit
@@ -349,6 +363,8 @@ def main() -> int:
         weight_folder=weight,
         max_samples=args.official_val_samples,
         every_n_val_checks=args.official_val_every,
+        epoch_frac=args.official_val_epoch_frac,
+        max_epochs=max_epochs if max_epochs > 0 else 50,
         eval_py=args.eval_py,
         datasplit=datasplit_path if datasplit_path.is_file() else "",
         parquet_root=parquet_root,
