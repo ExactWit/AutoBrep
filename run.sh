@@ -52,7 +52,7 @@ LIMIT_SAMPLES="${LIMIT_SAMPLES:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:--1}"
 LIMIT_TRAIN="${LIMIT_TRAIN:--1}"
 LIMIT_VAL="${LIMIT_VAL:--1}"
-OFFICIAL_VAL_SAMPLES="${OFFICIAL_VAL_SAMPLES:-4}"
+OFFICIAL_VAL_SAMPLES="${OFFICIAL_VAL_SAMPLES:--1}"
 OFFICIAL_VAL_EVERY="${OFFICIAL_VAL_EVERY:-1}"
 NO_OFFICIAL_VAL="${NO_OFFICIAL_VAL:-0}"
 EVAL_PY="${EVAL_PY:-/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py}"
@@ -162,7 +162,7 @@ case "${MODE}" in
       "view_num_latents": 64,
       "accumulate_grad_batches": 4,
       "num_workers": 2,
-      "official_val_samples": 4,
+      "official_val_samples": -1,
       "official_val_every": 1,
       "no_official_val": false
     },
@@ -256,7 +256,7 @@ case "${MODE}" in
       {"key": "view_num_latents", "flag": "--view-num-latents", "label": "视图条件 token 数", "type": "number"},
       {"key": "accumulate_grad_batches", "flag": "--accumulate-grad-batches", "label": "梯度累积", "type": "number"},
       {"key": "num_workers", "flag": "--num-workers", "label": "num_workers", "type": "number"},
-      {"key": "official_val_samples", "flag": "--official-val-samples", "label": "官方 val STEP 评测样本数", "type": "number"},
+      {"key": "official_val_samples", "flag": "--official-val-samples", "label": "官方 val STEP 数(≤0=全量~694)", "type": "number"},
       {"key": "official_val_every", "flag": "--official-val-every", "label": "每 N 次 val 跑官方评测", "type": "number"},
       {"key": "no_official_val", "flag": "--no-official-val", "label": "关闭官方 STEP 评测", "type": "bool"}
     ],

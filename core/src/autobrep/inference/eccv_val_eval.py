@@ -30,22 +30,47 @@ DEFAULT_EVAL_PY = Path(
 def load_official_val_ids(
     dataset_root: Path | str,
     *,
-    max_samples: int = 8,
+    max_samples: int = -1,
     split: str = "val",
     datasplit: str | Path | None = None,
+    parquet_root: str | Path | None = None,
+    require_gt: bool = True,
 ) -> list[str]:
-    """Sample ids from processed/datasplit.json (official train/val/test)."""
+    """
+    Official datasplit ids for conditioned STEP eval.
+
+    Prefer intersection with processed parquet split (has geometry that passed
+    preprocess). ``max_samples <= 0`` → use all remaining ids.
+    """
+    root = Path(dataset_root)
     if datasplit:
         split_path = Path(datasplit)
     else:
-        root = Path(dataset_root)
         split_path = root / "processed" / "datasplit.json"
         if not split_path.is_file():
             split_path = root / "processed" / "autobrep" / "datasplit.json"
     data = json.loads(split_path.read_text(encoding="utf-8"))
     ids = [str(x) for x in (data.get("splits") or {}).get(split) or []]
+
+    if parquet_root is not None:
+        pq = Path(parquet_root) / split
+        if pq.is_dir():
+            import pyarrow.dataset as ds
+
+            try:
+                table = ds.dataset(str(pq), format="parquet").to_table(
+                    columns=["sample_id"]
+                )
+                proc = {str(x) for x in table.column("sample_id").to_pylist()}
+                ids = [i for i in ids if i in proc]
+            except Exception as exc:  # noqa: BLE001
+                print(f"[eccv_val] parquet id filter skipped: {exc}", flush=True)
+
+    if require_gt:
+        ids = [i for i in ids if gt_step_path(root, i).is_file()]
+
     if max_samples > 0:
-        ids = ids[:max_samples]
+        ids = ids[: int(max_samples)]
     return ids
 
 
@@ -53,7 +78,6 @@ def gt_step_path(dataset_root: Path, sample_id: str) -> Path:
     return Path(dataset_root) / "train" / "target_step" / f"{sample_id}.step"
 
 
-@torch.inference_mode()
 def generate_pred_step(
     *,
     transformer: LightningModule,
@@ -74,6 +98,8 @@ def generate_pred_step(
     images, dxf, meta = load_condition_for_sample(
         dataset_root, sample_id, batch_size=1
     )
+    # Match vanilla AutoBrep sampler dtypes; disable outer AMP (PL bf16) which
+    # interacts badly with AR generate under inference_mode.
     images = images.to(device=device, dtype=torch.float16)
     prim_types = dxf["prim_types"].to(device)
     prim_linetypes = dxf["prim_linetypes"].to(device)
@@ -101,52 +127,75 @@ def generate_pred_step(
         .to(device)
     )
 
-    samples = transformer.generate(
-        prompt,
-        temperature,
-        top_p,
-        images=images,
-        prim_types=prim_types,
-        prim_linetypes=prim_linetypes,
-        prim_geom=prim_geom,
-        prim_mask=prim_mask,
-    )
-    tokens = torch.concat([prompt, samples], -1).detach().cpu().numpy()
+    was_training = transformer.training
+    transformer.eval()
+    try:
+        with torch.no_grad():
+            # Exit any Lightning autocast; AR sampling expects float16 weights path.
+            autocast_ctx = (
+                torch.autocast(device_type="cuda", enabled=False)
+                if device.type == "cuda"
+                else torch.autocast(device_type="cpu", enabled=False)
+            )
+            with autocast_ctx:
+                samples = transformer.generate(
+                    prompt,
+                    temperature,
+                    top_p,
+                    images=images,
+                    prim_types=prim_types,
+                    prim_linetypes=prim_linetypes,
+                    prim_geom=prim_geom,
+                    prim_mask=prim_mask,
+                )
+        tokens = torch.concat([prompt, samples], -1).detach().cpu().numpy()
 
-    # Reuse sampler decode helpers without loading a second AR.
-    class _DecodeShim:
-        pass
+        class _DecodeShim:
+            pass
 
-    shim = _DecodeShim()
-    shim.transformer = transformer
-    shim.surface_fsq = surface_fsq
-    shim.edge_fsq = edge_fsq
-    decoded = AutoRegressiveSampler.decode_tokens(shim, tokens)
-    cad_list = AutoRegressiveSampler.convert_to_cad_data(decoded) if decoded else []
-    if not cad_list:
-        return {"sample_id": sample_id, "ok": False, "error": "decode_failed", **meta}
+        shim = _DecodeShim()
+        shim.transformer = transformer
+        shim.surface_fsq = surface_fsq
+        shim.edge_fsq = edge_fsq
+        with torch.no_grad():
+            decoded = AutoRegressiveSampler.decode_tokens(shim, tokens)
+        cad_list = AutoRegressiveSampler.convert_to_cad_data(decoded) if decoded else []
+        if not cad_list:
+            return {
+                "sample_id": sample_id,
+                "ok": False,
+                "error": "decode_failed",
+                **meta,
+            }
 
-    builders = [
-        AutoBrepBuilder(
-            device=device,
-            z_threshold=z_threshold,
-            vertex_threshold=vertex_threshold,
-            sewing_tolerance=sewing_tolerance,
-        )
-    ]
-    compound = reconstruct_compound(cad_list[0], builders)
-    if compound is None:
-        return {"sample_id": sample_id, "ok": False, "error": "rebuild_failed", **meta}
+        builders = [
+            AutoBrepBuilder(
+                device=device,
+                z_threshold=z_threshold,
+                vertex_threshold=vertex_threshold,
+                sewing_tolerance=sewing_tolerance,
+            )
+        ]
+        compound = reconstruct_compound(cad_list[0], builders)
+        if compound is None:
+            return {
+                "sample_id": sample_id,
+                "ok": False,
+                "error": "rebuild_failed",
+                **meta,
+            }
 
-    out_step.parent.mkdir(parents=True, exist_ok=True)
-    save_step_func([compound], out_step)
-    return {
-        "sample_id": sample_id,
-        "ok": True,
-        "step": str(out_step),
-        "num_faces": int(cad_list[0].face_pos_cad.shape[0]),
-        **meta,
-    }
+        out_step.parent.mkdir(parents=True, exist_ok=True)
+        save_step_func([compound], out_step)
+        return {
+            "sample_id": sample_id,
+            "ok": True,
+            "step": str(out_step),
+            "num_faces": int(cad_list[0].face_pos_cad.shape[0]),
+            **meta,
+        }
+    finally:
+        transformer.train(was_training)
 
 
 def run_official_eval(
@@ -238,11 +287,12 @@ class EccvOfficialValCallback(Callback):
         dataset_root: str | Path,
         weight_folder: str | Path,
         sample_ids: Optional[Sequence[str]] = None,
-        max_samples: int = 4,
+        max_samples: int = -1,
         every_n_val_checks: int = 1,
         eval_py: str | Path = DEFAULT_EVAL_PY,
         work_dir: str | Path = "",
         datasplit: str | Path = "",
+        parquet_root: str | Path = "",
         complexity: str = "medium",
         temperature: float = 1.0,
         top_p: float = 0.9,
@@ -256,6 +306,7 @@ class EccvOfficialValCallback(Callback):
         self.eval_py = Path(eval_py)
         self.work_dir = Path(work_dir) if work_dir else None
         self.datasplit = Path(datasplit) if datasplit else None
+        self.parquet_root = Path(parquet_root) if parquet_root else None
         self.complexity = complexity
         self.temperature = temperature
         self.top_p = top_p
@@ -272,6 +323,8 @@ class EccvOfficialValCallback(Callback):
                 max_samples=self.max_samples,
                 split="val",
                 datasplit=self.datasplit,
+                parquet_root=self.parquet_root,
+                require_gt=True,
             )
         return list(self._sample_ids)
 
@@ -297,15 +350,15 @@ class EccvOfficialValCallback(Callback):
         if not self.enabled:
             print("[eccv_val] disabled (--no-official-val)", flush=True)
             return
-        print(
-            f"[eccv_val] callback ready: runs after each Lightning validation "
-            f"(every_n={self.every_n_val_checks}, samples={self.max_samples}, "
-            f"eval_py={self.eval_py})",
-            flush=True,
-        )
         sample_ids = self._ensure_ids()
         print(
-            f"[eccv_val] first official ids: {sample_ids[: min(5, len(sample_ids))]}",
+            f"[eccv_val] callback ready: conditioned STEP gen on "
+            f"official∩processed val (n={len(sample_ids)}, "
+            f"max_samples={self.max_samples}, every_n={self.every_n_val_checks})",
+            flush=True,
+        )
+        print(
+            f"[eccv_val] first ids: {sample_ids[: min(8, len(sample_ids))]}",
             flush=True,
         )
 
@@ -349,8 +402,10 @@ class EccvOfficialValCallback(Callback):
         gen_log: list[dict[str, Any]] = []
         try:
             surface_fsq, edge_fsq = self._ensure_fsq(device)
-            for sid in ok_ids:
+            for i, sid in enumerate(ok_ids):
                 try:
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
                     status = generate_pred_step(
                         transformer=pl_module,
                         surface_fsq=surface_fsq,
@@ -370,11 +425,12 @@ class EccvOfficialValCallback(Callback):
                         "error": f"exception:{exc}",
                     }
                 gen_log.append(status)
-                print(
-                    f"[eccv_val] {sid}: ok={status.get('ok')} "
-                    f"err={status.get('error', '')}",
-                    flush=True,
-                )
+                if (i + 1) % 10 == 0 or not status.get("ok") or i == 0:
+                    print(
+                        f"[eccv_val] [{i+1}/{len(ok_ids)}] {sid}: "
+                        f"ok={status.get('ok')} err={status.get('error', '')}",
+                        flush=True,
+                    )
         finally:
             pl_module.train(was_training)
 

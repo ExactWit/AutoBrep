@@ -38,8 +38,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--official-val-samples",
         type=int,
-        default=4,
-        help="How many official datasplit val ids to generate+score each official val",
+        default=-1,
+        help="Official∩processed val STEP gens per eval; <=0 means ALL (~694)",
     )
     p.add_argument(
         "--official-val-every",
@@ -335,6 +335,7 @@ def main() -> int:
         every_n_val_checks=args.official_val_every,
         eval_py=args.eval_py,
         datasplit=datasplit_path if datasplit_path.is_file() else "",
+        parquet_root=parquet_root,
         enabled=not args.no_official_val,
     )
 
