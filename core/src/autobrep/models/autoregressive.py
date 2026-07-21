@@ -14,6 +14,7 @@ from autobrep.data.token_mapping import MMTokenIndex
 from autobrep.models.autoregressive_samplers import TopP
 from autobrep.models.dataclass import BrepGenCAD, CheckpointPaths
 from autobrep.models.point_cloud_encoder import PointCloudConditionEncoder
+from autobrep.models.view_condition_encoder import ViewConditionEncoder
 from autobrep.models.vaes import EdgeFSQVAE, SurfaceFSQVAE
 from autobrep.network import XTransformer
 from autobrep.utils import compute_bbox_center_and_size, dequantize
@@ -56,10 +57,13 @@ class AutoRegressiveSampler(LightningModule):
         multimodal: bool = False,
         pc_conditioned: bool = False,
         pc_ckpt: Optional[str] = None,
+        view_conditioned: bool = False,
+        view_ckpt: Optional[str] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.pc_conditioned = pc_conditioned
+        self.view_conditioned = view_conditioned
 
         # Load vae
         self.surface_fsq = SurfaceFSQVAE.load_from_checkpoint(
@@ -72,8 +76,16 @@ class AutoRegressiveSampler(LightningModule):
         ).drop_encoder() 
         self.edge_fsq.to(device=device).eval()
 
-        # Load AR (optionally point-cloud conditioned)
-        if pc_conditioned:
+        # Load AR (optionally PC- or view-conditioned)
+        if view_conditioned:
+            ckpt = view_ckpt or checkpoint_paths.autoregressive
+            self.transformer = AutoBrepViewModel.load_from_checkpoint(
+                ckpt,
+                inference_mode=True,
+                strict=False,
+                map_location="cpu",
+            )
+        elif pc_conditioned:
             ckpt = pc_ckpt or checkpoint_paths.autoregressive
             self.transformer = AutoBrepPCModel.load_from_checkpoint(
                 ckpt,
@@ -95,6 +107,11 @@ class AutoRegressiveSampler(LightningModule):
         config,
         batch_size: int = 8,
         point_cloud: Optional[torch.Tensor] = None,
+        images: Optional[torch.Tensor] = None,
+        prim_types: Optional[torch.Tensor] = None,
+        prim_linetypes: Optional[torch.Tensor] = None,
+        prim_geom: Optional[torch.Tensor] = None,
+        prim_mask: Optional[torch.Tensor] = None,
     ):
         """
         Returns:
@@ -123,7 +140,23 @@ class AutoRegressiveSampler(LightningModule):
         )
 
         gen_kwargs = {}
-        if self.pc_conditioned:
+        if self.view_conditioned:
+            if images is None:
+                raise ValueError("view_conditioned sampler requires images (B,3,3,H,W)")
+            if prim_types is None or prim_mask is None:
+                raise ValueError("view_conditioned sampler requires TechDraw DXF tensors")
+            gen_kwargs["images"] = images.to(
+                device=self.transformer.device, dtype=torch.float16
+            )
+            gen_kwargs["prim_types"] = prim_types.to(device=self.transformer.device)
+            gen_kwargs["prim_linetypes"] = prim_linetypes.to(
+                device=self.transformer.device
+            )
+            gen_kwargs["prim_geom"] = prim_geom.to(
+                device=self.transformer.device, dtype=torch.float16
+            )
+            gen_kwargs["prim_mask"] = prim_mask.to(device=self.transformer.device)
+        elif self.pc_conditioned:
             if point_cloud is None:
                 raise ValueError("pc_conditioned sampler requires point_cloud (B,N,3)")
             gen_kwargs["point_cloud"] = point_cloud.to(
@@ -708,8 +741,10 @@ class AutoBrepPCModel(AutoBrepModel):
             print("[AutoBrepPCModel] missing (non-pc) sample:", miss_other[:8])
 
     def encode_point_cloud(self, point_cloud: torch.Tensor) -> torch.Tensor:
-        if point_cloud.dtype != torch.bfloat16:
-            point_cloud = point_cloud.to(dtype=torch.bfloat16)
+        # Match pc_encoder parameter dtype (sampler may cast the whole module to fp16).
+        param_dtype = next(self.pc_encoder.parameters()).dtype
+        if point_cloud.dtype != param_dtype:
+            point_cloud = point_cloud.to(dtype=param_dtype)
         return self.pc_encoder(point_cloud)
 
     def common_step(self, batch):
@@ -755,6 +790,205 @@ class AutoBrepPCModel(AutoBrepModel):
         if point_cloud is not None:
             prepend = self.encode_point_cloud(point_cloud)
         # KV cache + prepend_embeds is fragile across steps; disable cache for PC.
+        return self.cad_gpt.ar_decoder.generate(
+            prompts=prompt,
+            seq_len=self.hparams.max_seq,
+            eos_token=MMTokenIndex.EOS.value,
+            temperature=temperature,
+            filter_logits_fn=partial(top_p, thres=threshold),
+            cache_kv=False,
+            prepend_embeds=prepend,
+        )
+
+
+class AutoBrepViewModel(AutoBrepModel):
+    """
+    Multi-view conditioned AutoBrep (ECCV SFT).
+
+    Freezes pretrained AR + FSQ; trains only `view_encoder` soft prefix tokens
+    injected via `prepend_embeds`.
+    """
+
+    def __init__(
+        self,
+        surf_fsq_ckpt: str = None,
+        edge_fsq_ckpt: str = None,
+        lr: float = 1e-4,
+        weight_decay: float = 0.05,
+        sync_dist_train: bool = True,
+        bit: int = 10,
+        max_seq: int = 3000,
+        max_face: int = 200,
+        inference_mode: bool = False,
+        depth: int = 16,
+        heads: int = 32,
+        dim: int = 2048,
+        kv_groups: int = 8,
+        surf_codebook_size: int = 1024,
+        edge_codebook_size: int = 1024,
+        drop_decoder: bool = True,
+        ar_ckpt: str = None,
+        freeze_backbone: bool = True,
+        view_num_latents: int = 64,
+        view_hidden: int = 256,
+        view_dropout: float = 0.1,
+        view_dropout_max: int = 2,
+        num_views: int = 3,
+    ) -> None:
+        super().__init__(
+            surf_fsq_ckpt=surf_fsq_ckpt,
+            edge_fsq_ckpt=edge_fsq_ckpt,
+            lr=lr,
+            weight_decay=weight_decay,
+            sync_dist_train=sync_dist_train,
+            bit=bit,
+            max_seq=max_seq,
+            max_face=max_face,
+            inference_mode=inference_mode,
+            depth=depth,
+            heads=heads,
+            dim=dim,
+            kv_groups=kv_groups,
+            surf_codebook_size=surf_codebook_size,
+            edge_codebook_size=edge_codebook_size,
+            drop_decoder=drop_decoder,
+        )
+
+        self.view_encoder = ViewConditionEncoder(
+            dim=dim,
+            hidden=view_hidden,
+            num_latents=view_num_latents,
+            num_image_views=num_views if num_views <= 3 else 3,
+            dropout=view_dropout,
+            view_dropout_max=view_dropout_max,
+            pretrained_backbone=True,
+        )
+
+        if ar_ckpt and not inference_mode:
+            self.load_pretrained_ar(ar_ckpt)
+
+        if freeze_backbone:
+            self.cad_gpt.requires_grad_(False)
+            if hasattr(self, "surf_vae"):
+                self.surf_vae.requires_grad_(False)
+            if hasattr(self, "edge_vae"):
+                self.edge_vae.requires_grad_(False)
+
+        self.trainable_params = [
+            p for p in self.view_encoder.parameters() if p.requires_grad
+        ]
+
+        n_train = sum(p.numel() for p in self.trainable_params)
+        n_total = sum(p.numel() for p in self.parameters())
+        print(
+            f"[AutoBrepViewModel] trainable={n_train/1e6:.2f}M / total={n_total/1e6:.2f}M "
+            f"(freeze_backbone={freeze_backbone})"
+        )
+
+    def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
+        loss = self.common_step(batch)
+        self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx) -> STEP_OUTPUT:
+        loss = self.common_step(batch)
+        self.log("val_loss", loss, prog_bar=True, on_epoch=True, sync_dist=True)
+        return loss
+
+    def load_pretrained_ar(self, ar_ckpt: str) -> None:
+        path = Path(ar_ckpt)
+        if not path.is_file():
+            raise FileNotFoundError(f"ar_ckpt not found: {path}")
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        state = ckpt.get("state_dict", ckpt)
+        missing, unexpected = self.load_state_dict(state, strict=False)
+        miss_view = [k for k in missing if k.startswith("view_encoder")]
+        miss_other = [k for k in missing if not k.startswith("view_encoder")]
+        print(
+            f"[AutoBrepViewModel] loaded {path.name}: "
+            f"missing_view={len(miss_view)} missing_other={len(miss_other)} "
+            f"unexpected={len(unexpected)}"
+        )
+        if miss_other:
+            print("[AutoBrepViewModel] missing (non-view) sample:", miss_other[:8])
+
+    def encode_views(
+        self,
+        images: torch.Tensor,
+        prim_types: torch.Tensor,
+        prim_linetypes: torch.Tensor,
+        prim_geom: torch.Tensor,
+        prim_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        param_dtype = next(self.view_encoder.parameters()).dtype
+        if images.dtype != param_dtype:
+            images = images.to(dtype=param_dtype)
+        if prim_geom.dtype != param_dtype and prim_geom.is_floating_point():
+            prim_geom = prim_geom.to(dtype=param_dtype)
+        return self.view_encoder(
+            images, prim_types, prim_linetypes, prim_geom, prim_mask
+        )
+
+    def common_step(self, batch):
+        token, face_ncs, edge_ncs = (
+            batch["seq"],
+            batch["face_ncs"].to(dtype=torch.bfloat16),
+            batch["edge_ncs"].to(dtype=torch.bfloat16),
+        )
+        images = batch["images"].to(dtype=torch.bfloat16)
+        prim_types = batch["prim_types"]
+        prim_linetypes = batch["prim_linetypes"]
+        prim_geom = batch["prim_geom"].to(dtype=torch.bfloat16)
+        prim_mask = batch["prim_mask"]
+
+        with torch.no_grad():
+            surf_id, edge_id = self.encode_fsq_code(face_ncs, edge_ncs)
+
+        updated_token, loss_mask = [], []
+        for _token_, _surf_id_, _edge_id_ in zip(token, surf_id, edge_id):
+            batch_data = self.copy_fsq_code(_token_, _surf_id_, _edge_id_)
+            updated_token.append(
+                torch.nn.functional.pad(
+                    batch_data,
+                    (0, self.pad_len - len(batch_data)),
+                    value=-1,
+                )
+            )
+            mask = torch.zeros(self.pad_len).bool()
+            mask[:4] = True  # ignore BOS + meta block
+            loss_mask.append(mask)
+
+        updated_token = torch.stack(updated_token).detach()
+        loss_mask = torch.stack(loss_mask).detach()
+
+        prepend = self.encode_views(
+            images, prim_types, prim_linetypes, prim_geom, prim_mask
+        )
+        loss = self.cad_gpt(
+            updated_token,
+            cond_mask=loss_mask,
+            attn_mask=None,
+            prepend_embeds=prepend,
+        )
+        return loss
+
+    @torch.inference_mode()
+    def generate(
+        self,
+        prompt,
+        temperature,
+        threshold,
+        images=None,
+        prim_types=None,
+        prim_linetypes=None,
+        prim_geom=None,
+        prim_mask=None,
+    ):
+        prepend = None
+        if images is not None:
+            prepend = self.encode_views(
+                images, prim_types, prim_linetypes, prim_geom, prim_mask
+            )
         return self.cad_gpt.ar_decoder.generate(
             prompts=prompt,
             seq_len=self.hparams.max_seq,

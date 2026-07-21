@@ -1,0 +1,66 @@
+# ECCV multi-view conditioned AutoBrep SFT
+seed_everything: True
+data:
+  class_path: autobrep.data.eccv_data.ECCVViewDataModule
+  init_args:
+    data_root: /data/hdd/datasets/eccv2026ws-cad-data/processed/autobrep
+    dataset_root: /data/hdd/datasets/eccv2026ws-cad-data
+    batch_size: 1
+    limit_train: null
+    limit_val: null
+    prefetch_batches: 1
+    materialize: False
+    min_face: 2
+    max_face: 200
+    max_edge: 1000
+    max_seq: 3000
+    bit: 10
+    load_geom: False
+    geom_ratio: 0.0
+    geom_tokenizer: constraint
+    load_meta: True
+    meta_ratio: 0.8
+    load_point_cloud: False
+    aug: True
+    uv_invariant: True
+    scaled_unique: False
+    surf_codebook_size: 1024
+    edge_codebook_size: 1024
+    num_workers: 2
+    pin_memory: True
+    view_size: 224
+trainer:
+  accelerator: gpu
+  devices: 1
+  strategy: auto
+  max_epochs: -1
+  max_steps: 10000
+  val_check_interval: 500
+  limit_val_batches: 50
+  log_every_n_steps: 10
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 4
+model:
+  class_path: autobrep.models.autoregressive.AutoBrepViewModel
+  init_args:
+    max_face: 200
+    max_seq: 3000
+    bit: 10
+    surf_codebook_size: 1024
+    edge_codebook_size: 1024
+    depth: 16
+    heads: 32
+    kv_groups: 8
+    dim: 2048
+    surf_fsq_ckpt: /data/hdd/outputs/AutoBrep/surf-fsq.ckpt
+    edge_fsq_ckpt: /data/hdd/outputs/AutoBrep/edge-fsq.ckpt
+    ar_ckpt: /data/hdd/outputs/AutoBrep/ar.ckpt
+    freeze_backbone: True
+    view_num_latents: 64
+    view_hidden: 256
+    view_dropout: 0.1
+    view_dropout_max: 1
+    num_views: 3
+    lr: 0.0001
+    weight_decay: 0.05

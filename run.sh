@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# exp_launcher entry — AutoBrep (unconditional infer + PC-conditioned train/infer).
+# exp_launcher entry — AutoBrep (PC-cond + ECCV view-cond SFT).
 set -eo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,11 +37,18 @@ LIMIT_VAL_BATCHES="${LIMIT_VAL_BATCHES:-50}"
 LR="${LR:-0.0001}"
 PC_NUM_POINTS="${PC_NUM_POINTS:-2048}"
 PC_NUM_LATENTS="${PC_NUM_LATENTS:-64}"
+VIEW_NUM_LATENTS="${VIEW_NUM_LATENTS:-64}"
 ACCUM_GRAD="${ACCUM_GRAD:-4}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 PC_CONDITIONED="${PC_CONDITIONED:-0}"
+VIEW_CONDITIONED="${VIEW_CONDITIONED:-0}"
 POINT_CLOUD="${POINT_CLOUD:-}"
-# legacy (accepted but ignored by train_pc_pipeline)
+SAMPLE_ID_ARG=""
+INFER_SPLIT_NAME="${INFER_SPLIT_NAME:-val}"
+MAX_FACE="${MAX_FACE:-200}"
+SHARD_SIZE="${SHARD_SIZE:-100}"
+LIMIT_SAMPLES="${LIMIT_SAMPLES:-0}"
+# legacy (accepted but ignored by train_*_pipeline)
 MAX_EPOCHS="${MAX_EPOCHS:--1}"
 LIMIT_TRAIN="${LIMIT_TRAIN:--1}"
 LIMIT_VAL="${LIMIT_VAL:--1}"
@@ -76,14 +83,20 @@ while [[ $# -gt 0 ]]; do
     --lr) LR="$2"; shift 2 ;;
     --pc-num-points) PC_NUM_POINTS="$2"; shift 2 ;;
     --pc-num-latents) PC_NUM_LATENTS="$2"; shift 2 ;;
+    --view-num-latents) VIEW_NUM_LATENTS="$2"; shift 2 ;;
     --accumulate-grad-batches) ACCUM_GRAD="$2"; shift 2 ;;
     --num-workers) NUM_WORKERS="$2"; shift 2 ;;
     --pc-conditioned) PC_CONDITIONED="$2"; shift 2 ;;
+    --view-conditioned) VIEW_CONDITIONED="$2"; shift 2 ;;
     --point-cloud) POINT_CLOUD="$2"; shift 2 ;;
+    --sample-id|--index) SAMPLE_ID_ARG="$2"; shift 2 ;;
+    --infer-split-name) INFER_SPLIT_NAME="$2"; shift 2 ;;
+    --max-face) MAX_FACE="$2"; shift 2 ;;
+    --shard-size) SHARD_SIZE="$2"; shift 2 ;;
+    --limit-samples) LIMIT_SAMPLES="$2"; shift 2 ;;
     --max-epochs) MAX_EPOCHS="$2"; shift 2 ;;
     --limit-train) LIMIT_TRAIN="$2"; shift 2 ;;
     --limit-val) LIMIT_VAL="$2"; shift 2 ;;
-    --index|--sample-id) shift 2 ;;
     --) shift; break ;;
     -*) echo "[run.sh] unknown option: $1" >&2; exit 1 ;;
     *) break ;;
@@ -107,20 +120,29 @@ case "${MODE}" in
   capabilities)
     exec cat <<'JSON'
 {
-  "modes": ["capabilities", "train", "infer"],
-  "datasets": ["abc", "abc-1m"],
-  "tasks": {"abc": ["gen"], "abc-1m": ["gen"]},
+  "modes": ["capabilities", "preprocess", "train", "infer"],
+  "datasets": ["abc", "abc-1m", "eccv2026ws-cad-data"],
+  "tasks": {"abc": ["gen"], "abc-1m": ["gen"], "eccv2026ws-cad-data": ["gen", "cad"]},
   "env_file": "environment.yml",
   "checkpoints": {
     "ar": "ar.ckpt",
     "surf_fsq": "surf-fsq.ckpt",
     "edge_fsq": "edge-fsq.ckpt",
-    "pc_cond": "last.ckpt"
+    "pc_cond": "last.ckpt",
+    "eccv_view": "last.ckpt"
   },
   "infer_requires_sample": false,
   "defaults": {
+    "preprocess": {
+      "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
+      "max_face": 200,
+      "shard_size": 100,
+      "limit_samples": 0,
+      "num_workers": 4
+    },
     "train": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
+      "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
       "batch_size": 1,
       "max_steps": 10000,
       "val_check_interval": 500,
@@ -128,12 +150,14 @@ case "${MODE}" in
       "lr": 0.0001,
       "pc_num_points": 2048,
       "pc_num_latents": 64,
+      "view_num_latents": 64,
       "accumulate_grad_batches": 4,
       "num_workers": 2
     },
     "infer": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
-      "batch_size": 8,
+      "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
+      "batch_size": 1,
       "num_batches": 10,
       "complexity": "medium",
       "temperature": 1.0,
@@ -144,12 +168,23 @@ case "${MODE}" in
       "seed": 689447,
       "use_seed": false,
       "debug": true,
-      "pc_conditioned": false
+      "pc_conditioned": false,
+      "view_conditioned": false,
+      "infer_split_name": "val"
     }
   },
   "args": {
+    "preprocess": [
+      "--data-dir",
+      "--max-face",
+      "--shard-size",
+      "--limit-samples",
+      "--num-workers",
+      "--datasplit"
+    ],
     "train": [
       "--weight-folder",
+      "--data-dir",
       "--batch-size",
       "--max-steps",
       "--val-check-interval",
@@ -157,6 +192,7 @@ case "${MODE}" in
       "--lr",
       "--pc-num-points",
       "--pc-num-latents",
+      "--view-num-latents",
       "--accumulate-grad-batches",
       "--num-workers",
       "--gpu",
@@ -164,6 +200,7 @@ case "${MODE}" in
     ],
     "infer": [
       "--weight-folder",
+      "--data-dir",
       "--batch-size",
       "--num-batches",
       "--complexity",
@@ -178,24 +215,37 @@ case "${MODE}" in
       "--checkpoint",
       "--gpu",
       "--pc-conditioned",
-      "--point-cloud"
+      "--view-conditioned",
+      "--point-cloud",
+      "--sample-id",
+      "--infer-split-name"
     ]
   },
   "arg_fields": {
+    "preprocess": [
+      {"key": "data_dir", "flag": "--data-dir", "label": "ECCV 数据集根目录", "type": "text"},
+      {"key": "max_face", "flag": "--max-face", "label": "最大面数", "type": "number"},
+      {"key": "shard_size", "flag": "--shard-size", "label": "parquet shard 行数", "type": "number"},
+      {"key": "limit_samples", "flag": "--limit-samples", "label": "限制样本数(0=全部)", "type": "number"},
+      {"key": "num_workers", "flag": "--num-workers", "label": "并行进程数", "type": "number"}
+    ],
     "train": [
       {"key": "weight_folder", "flag": "--weight-folder", "label": "预训练权重目录", "type": "text"},
+      {"key": "data_dir", "flag": "--data-dir", "label": "数据根目录", "type": "text"},
       {"key": "batch_size", "flag": "--batch-size", "label": "batch_size", "type": "number"},
       {"key": "max_steps", "flag": "--max-steps", "label": "优化器步数 max_steps", "type": "number"},
       {"key": "val_check_interval", "flag": "--val-check-interval", "label": "每 N batch 验证", "type": "number"},
       {"key": "limit_val_batches", "flag": "--limit-val-batches", "label": "每次验证 batch 上限", "type": "number"},
       {"key": "lr", "flag": "--lr", "label": "learning rate", "type": "number"},
-      {"key": "pc_num_points", "flag": "--pc-num-points", "label": "点云点数", "type": "number"},
-      {"key": "pc_num_latents", "flag": "--pc-num-latents", "label": "条件 token 数", "type": "number"},
+      {"key": "pc_num_points", "flag": "--pc-num-points", "label": "点云点数(PC)", "type": "number"},
+      {"key": "pc_num_latents", "flag": "--pc-num-latents", "label": "PC 条件 token 数", "type": "number"},
+      {"key": "view_num_latents", "flag": "--view-num-latents", "label": "视图条件 token 数", "type": "number"},
       {"key": "accumulate_grad_batches", "flag": "--accumulate-grad-batches", "label": "梯度累积", "type": "number"},
       {"key": "num_workers", "flag": "--num-workers", "label": "num_workers", "type": "number"}
     ],
     "infer": [
       {"key": "weight_folder", "flag": "--weight-folder", "label": "权重目录", "type": "text"},
+      {"key": "data_dir", "flag": "--data-dir", "label": "数据根目录", "type": "text"},
       {"key": "batch_size", "flag": "--batch-size", "label": "batch_size", "type": "number"},
       {"key": "num_batches", "flag": "--num-batches", "label": "采样批次数", "type": "number"},
       {"key": "complexity", "flag": "--complexity", "label": "复杂度", "type": "select", "choices": ["random", "easy", "medium", "hard"]},
@@ -208,11 +258,33 @@ case "${MODE}" in
       {"key": "use_seed", "flag": "--use-seed", "label": "固定随机种子", "type": "bool"},
       {"key": "debug", "flag": "--debug", "label": "debug 图/点云", "type": "bool"},
       {"key": "pc_conditioned", "flag": "--pc-conditioned", "label": "点云条件推理", "type": "bool"},
-      {"key": "point_cloud", "flag": "--point-cloud", "label": "点云 .npy (N,3)", "type": "text"}
+      {"key": "view_conditioned", "flag": "--view-conditioned", "label": "多视图条件推理", "type": "bool"},
+      {"key": "point_cloud", "flag": "--point-cloud", "label": "点云 .npy (N,3)", "type": "text"},
+      {"key": "sample_id", "flag": "--sample-id", "label": "ECCV sample id", "type": "text"},
+      {"key": "infer_split_name", "flag": "--infer-split-name", "label": "infer split", "type": "select", "choices": ["train", "val", "test", "public_test"]}
     ]
   }
 }
 JSON
+    ;;
+
+  preprocess)
+    activate_env
+    DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/eccv2026ws-cad-data}"
+    PRE_ARGS=(
+      --data-dir "${DATA_ROOT}"
+      --max-face "${MAX_FACE}"
+      --shard-size "${SHARD_SIZE}"
+      --num-workers "${NUM_WORKERS}"
+    )
+    if [[ -n "${DATASPLIT_ARG}" ]]; then
+      PRE_ARGS+=(--datasplit "${DATASPLIT_ARG}")
+    fi
+    if [[ "${LIMIT_SAMPLES}" != "0" ]]; then
+      PRE_ARGS+=(--limit-samples "${LIMIT_SAMPLES}")
+    fi
+    echo "[run.sh] preprocess data=${DATA_ROOT}" >&2
+    exec python -u "${REPO_DIR}/scripts/preprocess_eccv_autobrep.py" "${PRE_ARGS[@]}"
     ;;
 
   train)
@@ -221,12 +293,45 @@ JSON
       echo "[run.sh] ERROR: --exp-dir is required for train" >&2
       exit 1
     fi
-    DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/ABC-1M}"
+    DATASET="${DATASET_ARG:-eccv2026ws-cad-data}"
     mkdir -p "${EXP_DIR_ARG}/checkpoints" "${EXP_DIR_ARG}/metrics" "${EXP_DIR_ARG}/tensorboard"
+
+    if [[ "${DATASET}" == "eccv2026ws-cad-data" || "${DATASET}" == "eccv2026ws-cad" || "${DATASET}" == "eccv" ]]; then
+      DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/eccv2026ws-cad-data}"
+      TRAIN_ARGS=(
+        --exp-dir "${EXP_DIR_ARG}"
+        --data-dir "${DATA_ROOT}"
+        --dataset "${DATASET}"
+        --task "${TASK_ARG:-gen}"
+        --weight-folder "${WEIGHT_FOLDER}"
+        --gpu "${GPU}"
+        --batch-size "${BATCH_SIZE}"
+        --max-steps "${MAX_STEPS}"
+        --val-check-interval "${VAL_CHECK_INTERVAL}"
+        --limit-val-batches "${LIMIT_VAL_BATCHES}"
+        --lr "${LR}"
+        --view-num-latents "${VIEW_NUM_LATENTS}"
+        --accumulate-grad-batches "${ACCUM_GRAD}"
+        --num-workers "${NUM_WORKERS}"
+      )
+      if [[ -n "${OUTPUT_DIR_ARG}" ]]; then
+        TRAIN_ARGS+=(--output-dir "${OUTPUT_DIR_ARG}")
+      fi
+      if [[ -n "${DATASPLIT_ARG}" ]]; then
+        TRAIN_ARGS+=(--datasplit "${DATASPLIT_ARG}")
+      fi
+      if [[ -n "${RESUME_FROM_ARG}" ]]; then
+        TRAIN_ARGS+=(--resume-from "${RESUME_FROM_ARG}")
+      fi
+      echo "[run.sh] train eccv data=${DATA_ROOT} weight=${WEIGHT_FOLDER} → ${EXP_DIR_ARG}" >&2
+      exec python -u "${REPO_DIR}/scripts/train_eccv_pipeline.py" "${TRAIN_ARGS[@]}"
+    fi
+
+    DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/ABC-1M}"
     TRAIN_ARGS=(
       --exp-dir "${EXP_DIR_ARG}"
       --data-dir "${DATA_ROOT}"
-      --dataset "${DATASET_ARG:-abc-1m}"
+      --dataset "${DATASET}"
       --task "${TASK_ARG:-gen}"
       --weight-folder "${WEIGHT_FOLDER}"
       --gpu "${GPU}"
@@ -249,7 +354,7 @@ JSON
     if [[ -n "${RESUME_FROM_ARG}" ]]; then
       TRAIN_ARGS+=(--resume-from "${RESUME_FROM_ARG}")
     fi
-    echo "[run.sh] train data=${DATA_ROOT} weight=${WEIGHT_FOLDER} → ${EXP_DIR_ARG}" >&2
+    echo "[run.sh] train pc data=${DATA_ROOT} weight=${WEIGHT_FOLDER} → ${EXP_DIR_ARG}" >&2
     exec python -u "${REPO_DIR}/scripts/train_pc_pipeline.py" "${TRAIN_ARGS[@]}"
     ;;
 
@@ -293,6 +398,8 @@ JSON
       --debug "${DEBUG}"
       --format "${FORMAT_ARG}"
       --pc-conditioned "${PC_CONDITIONED}"
+      --view-conditioned "${VIEW_CONDITIONED}"
+      --infer-split-name "${INFER_SPLIT_NAME}"
     )
     if [[ -n "${DATA_DIR_ARG}" ]]; then
       INFER_ARGS+=(--data-dir "${DATA_DIR_ARG}")
@@ -306,12 +413,15 @@ JSON
     if [[ -n "${POINT_CLOUD}" ]]; then
       INFER_ARGS+=(--point-cloud "${POINT_CLOUD}")
     fi
-    echo "[run.sh] infer weight_folder=${WEIGHT_FOLDER} pc=${PC_CONDITIONED} → ${OUTPUT_DIR_ARG}/infer" >&2
+    if [[ -n "${SAMPLE_ID_ARG}" ]]; then
+      INFER_ARGS+=(--sample-id "${SAMPLE_ID_ARG}")
+    fi
+    echo "[run.sh] infer weight_folder=${WEIGHT_FOLDER} pc=${PC_CONDITIONED} view=${VIEW_CONDITIONED} → ${OUTPUT_DIR_ARG}/infer" >&2
     exec python -u "${REPO_DIR}/scripts/infer_pipeline.py" "${INFER_ARGS[@]}"
     ;;
 
   *)
-    echo "[run.sh] unknown mode: ${MODE} (supported: capabilities, train, infer)" >&2
+    echo "[run.sh] unknown mode: ${MODE} (supported: capabilities, preprocess, train, infer)" >&2
     exit 1
     ;;
 esac
