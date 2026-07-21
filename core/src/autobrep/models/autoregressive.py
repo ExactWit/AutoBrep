@@ -966,14 +966,14 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_mask: torch.Tensor,
         *,
         allow_uncond: bool = False,
-    ) -> int:
+    ) -> "int | list[int]":
         """
         Infer complexity token from view+DXF prepend via one AR step after BOS,BOM.
 
         Training already places GT face-count complexity after BOM in the discrete
         sequence while prepend_embeds condition the same Transformer, so P(C|cond)
         is learned by CE. At infer we take argmax over {easy,mid,hard} (+ optional
-        uncond).
+        uncond). Returns int for B=1, else list[int] length B.
         """
         device = next(self.parameters()).device
         prepend = self.encode_views(
@@ -1002,8 +1002,10 @@ class AutoBrepViewModel(AutoBrepModel):
             allowed.append(MMTokenIndex.GEN_UNCOND.value)
         allowed_t = torch.tensor(allowed, device=device, dtype=torch.long)
         pick = next_logits.index_select(-1, allowed_t).argmax(dim=-1)
-        # batch>1: return first; callers that need all should loop / extend later
-        return int(allowed_t[pick[0]].item())
+        ids = allowed_t[pick]
+        if ids.numel() == 1:
+            return int(ids[0].item())
+        return [int(x) for x in ids.tolist()]
 
     def common_step(self, batch):
         token, face_ncs, edge_ncs = (

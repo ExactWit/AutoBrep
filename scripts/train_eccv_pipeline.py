@@ -44,7 +44,19 @@ def parse_args() -> argparse.Namespace:
         "--official-val-samples",
         type=int,
         default=-1,
-        help="Official∩processed val STEP gens per eval; <=0 means ALL (~694)",
+        help="Full STEP eval sample count at final epoch; <=0 means ALL (~694)",
+    )
+    p.add_argument(
+        "--official-val-samples-mid",
+        type=int,
+        default=24,
+        help="Fixed STEP subset for mid milestones (25/50/75%%); keep small for speed",
+    )
+    p.add_argument(
+        "--official-val-gen-batch",
+        type=int,
+        default=4,
+        help="AR generate batch size during official STEP eval (use spare VRAM)",
     )
     p.add_argument(
         "--official-val-every",
@@ -220,6 +232,8 @@ def main() -> int:
         "cuda_device": torch.cuda.get_device_name(0),
         "official_val": not args.no_official_val,
         "official_val_samples": args.official_val_samples,
+        "official_val_samples_mid": args.official_val_samples_mid,
+        "official_val_gen_batch": args.official_val_gen_batch,
         "official_val_every": args.official_val_every,
         "official_val_epoch_frac": args.official_val_epoch_frac,
         "complexity": args.complexity,
@@ -362,6 +376,8 @@ def main() -> int:
         dataset_root=dataset_root,
         weight_folder=weight,
         max_samples=args.official_val_samples,
+        max_samples_mid=args.official_val_samples_mid,
+        gen_batch_size=args.official_val_gen_batch,
         every_n_val_checks=args.official_val_every,
         epoch_frac=args.official_val_epoch_frac,
         max_epochs=max_epochs if max_epochs > 0 else 50,
