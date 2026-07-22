@@ -226,21 +226,40 @@ def extract_autobrep_from_step(
     )
 
 
-RENDER_VIEWS = (
-    ("render_transparent", "train/render_3d/transparent_shaded_edges_perspective"),
-    ("render_hlg", "train/render_3d/hlg_perspective"),
-    ("render_hlg_translucent", "train/render_3d/hlg_translucent_faces_perspective"),
+RENDER_VIEW_SUBDIRS = (
+    ("render_transparent", "render_3d/transparent_shaded_edges_perspective"),
+    ("render_hlg", "render_3d/hlg_perspective"),
+    ("render_hlg_translucent", "render_3d/hlg_translucent_faces_perspective"),
+)
+
+# backward-compatible alias (train-only absolute relpaths)
+RENDER_VIEWS = tuple(
+    (col, f"train/{sub}") for col, sub in RENDER_VIEW_SUBDIRS
 )
 
 
-def eccv_condition_paths(sample_id: str) -> dict[str, str]:
-    """Relative paths (posix) for parquet metadata columns."""
+def condition_root_for_split(split: str | None) -> str:
+    """Datasplit name → on-disk condition root (train/ vs test_public/)."""
+    name = str(split or "train").strip().lower()
+    if name in {"public_test", "public", "test_public"}:
+        return "test_public"
+    return "train"
+
+
+def eccv_condition_paths(
+    sample_id: str,
+    *,
+    condition_root: str = "train",
+    split: str | None = None,
+) -> dict[str, str]:
+    """Relative paths (posix) for parquet / infer condition columns."""
     sid = sample_id.strip()
+    root = condition_root_for_split(split) if split is not None else str(condition_root)
     out: dict[str, str] = {}
-    for col, folder in RENDER_VIEWS:
-        out[col] = f"{folder}/{sid}.png"
-    out["techdraw_svg_path"] = f"train/techdraw/svg/{sid}.svg"
-    out["techdraw_dxf_path"] = f"train/techdraw/dxf/{sid}.dxf"
+    for col, sub in RENDER_VIEW_SUBDIRS:
+        out[col] = f"{root}/{sub}/{sid}.png"
+    out["techdraw_svg_path"] = f"{root}/techdraw/svg/{sid}.svg"
+    out["techdraw_dxf_path"] = f"{root}/techdraw/dxf/{sid}.dxf"
     return out
 
 

@@ -90,20 +90,28 @@ def load_condition_for_sample(
     *,
     batch_size: int = 1,
     size: int = VIEW_SIZE,
+    split: str = "val",
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, Any]]:
     """
     Load 3 render views + TechDraw DXF primitives for one sample.
+
+    ``split=public_test`` reads conditions from ``test_public/`` (files differ
+    from train/ even when sample ids overlap).
 
     Returns:
         images: (B, 3, 3, H, W)
         dxf: batched prim_* tensors
         meta: dict
     """
-    from autobrep.data.step_to_autobrep import eccv_condition_paths
+    from autobrep.data.step_to_autobrep import (
+        condition_root_for_split,
+        eccv_condition_paths,
+    )
 
     root = Path(dataset_root)
     sid = str(sample_id).strip()
-    row = eccv_condition_paths(sid)
+    cond_root = condition_root_for_split(split)
+    row = eccv_condition_paths(sid, condition_root=cond_root)
     images_np = load_render_views(root, row, size=size)
     images = torch.from_numpy(images_np).unsqueeze(0).expand(batch_size, -1, -1, -1, -1)
     dxf = load_techdraw_dxf(root, row)
@@ -119,6 +127,8 @@ def load_condition_for_sample(
         "source": "eccv_renders_plus_dxf",
         "sample_id": sid,
         "dataset_root": str(root),
+        "split": str(split),
+        "condition_root": cond_root,
         "paths": row,
         "images_shape": list(images.shape),
         "n_prims": int(dxf["n_prims"].item()) if hasattr(dxf["n_prims"], "item") else int(dxf["n_prims"]),

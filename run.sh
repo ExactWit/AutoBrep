@@ -54,11 +54,13 @@ LIMIT_TRAIN="${LIMIT_TRAIN:--1}"
 LIMIT_VAL="${LIMIT_VAL:--1}"
 OFFICIAL_VAL_SAMPLES="${OFFICIAL_VAL_SAMPLES:--1}"
 OFFICIAL_VAL_SAMPLES_MID="${OFFICIAL_VAL_SAMPLES_MID:-24}"
-OFFICIAL_VAL_GEN_BATCH="${OFFICIAL_VAL_GEN_BATCH:-4}"
+OFFICIAL_VAL_GEN_BATCH="${OFFICIAL_VAL_GEN_BATCH:-2}"
 OFFICIAL_VAL_EVERY="${OFFICIAL_VAL_EVERY:-0}"
 OFFICIAL_VAL_EPOCH_FRAC="${OFFICIAL_VAL_EPOCH_FRAC:-0.25}"
 NO_OFFICIAL_VAL="${NO_OFFICIAL_VAL:-0}"
 EVAL_PY="${EVAL_PY:-/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py}"
+EVAL_GEN_BATCH="${EVAL_GEN_BATCH:-2}"
+MAKE_SUBMISSION_ZIP="${MAKE_SUBMISSION_ZIP:-0}"
 # ECCV view-cond default: epoch schedule on small set (override with --max-steps)
 ECCV_MAX_EPOCHS="${ECCV_MAX_EPOCHS:-50}"
 
@@ -113,6 +115,8 @@ while [[ $# -gt 0 ]]; do
     --official-val-epoch-frac) OFFICIAL_VAL_EPOCH_FRAC="$2"; shift 2 ;;
     --no-official-val) NO_OFFICIAL_VAL="$2"; shift 2 ;;
     --eval-py) EVAL_PY="$2"; shift 2 ;;
+    --gen-batch|--eval-gen-batch) EVAL_GEN_BATCH="$2"; shift 2 ;;
+    --make-submission-zip) MAKE_SUBMISSION_ZIP="$2"; shift 2 ;;
     --) shift; break ;;
     -*) echo "[run.sh] unknown option: $1" >&2; exit 1 ;;
     *) break ;;
@@ -136,7 +140,8 @@ case "${MODE}" in
   capabilities)
     exec cat <<'JSON'
 {
-  "modes": ["capabilities", "preprocess", "train", "infer"],
+  "modes": ["capabilities", "preprocess", "train", "test", "infer", "public_infer"],
+  "launch_modes": ["preprocess", "train", "resume", "test", "infer", "public_infer"],
   "datasets": ["abc", "abc-1m", "eccv2026ws-cad-data"],
   "tasks": {"abc": ["gen"], "abc-1m": ["gen"], "eccv2026ws-cad-data": ["gen", "cad"]},
   "env_file": "environment.yml",
@@ -170,11 +175,19 @@ case "${MODE}" in
       "num_workers": 2,
       "official_val_samples": -1,
       "official_val_samples_mid": 24,
-      "official_val_gen_batch": 4,
+      "official_val_gen_batch": 2,
       "official_val_every": 0,
       "official_val_epoch_frac": 0.25,
       "no_official_val": false,
       "complexity": "from_condition"
+    },
+    "test": {
+      "weight_folder": "/data/hdd/outputs/AutoBrep",
+      "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
+      "complexity": "from_condition",
+      "temperature": 1.0,
+      "top_p": 0.9,
+      "gen_batch": 2
     },
     "infer": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
@@ -193,6 +206,15 @@ case "${MODE}" in
       "pc_conditioned": false,
       "view_conditioned": false,
       "infer_split_name": "val"
+    },
+    "public_infer": {
+      "weight_folder": "/data/hdd/outputs/AutoBrep",
+      "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
+      "complexity": "from_condition",
+      "temperature": 1.0,
+      "top_p": 0.9,
+      "gen_batch": 2,
+      "make_submission_zip": true
     }
   },
   "args": {
@@ -227,6 +249,18 @@ case "${MODE}" in
       "--eval-py",
       "--complexity"
     ],
+    "test": [
+      "--weight-folder",
+      "--data-dir",
+      "--datasplit",
+      "--checkpoint",
+      "--gpu",
+      "--complexity",
+      "--temperature",
+      "--top-p",
+      "--gen-batch",
+      "--eval-py"
+    ],
     "infer": [
       "--weight-folder",
       "--data-dir",
@@ -247,7 +281,20 @@ case "${MODE}" in
       "--view-conditioned",
       "--point-cloud",
       "--sample-id",
-      "--infer-split-name"
+      "--infer-split-name",
+      "--datasplit"
+    ],
+    "public_infer": [
+      "--weight-folder",
+      "--data-dir",
+      "--datasplit",
+      "--checkpoint",
+      "--gpu",
+      "--complexity",
+      "--temperature",
+      "--top-p",
+      "--gen-batch",
+      "--make-submission-zip"
     ]
   },
   "arg_fields": {
@@ -297,6 +344,23 @@ case "${MODE}" in
       {"key": "point_cloud", "flag": "--point-cloud", "label": "点云 .npy (N,3)", "type": "text"},
       {"key": "sample_id", "flag": "--sample-id", "label": "ECCV sample id", "type": "text"},
       {"key": "infer_split_name", "flag": "--infer-split-name", "label": "infer split", "type": "select", "choices": ["train", "val", "test", "public_test"]}
+    ],
+    "test": [
+      {"key": "weight_folder", "flag": "--weight-folder", "label": "预训练权重目录", "type": "text"},
+      {"key": "data_dir", "flag": "--data-dir", "label": "数据根目录", "type": "text"},
+      {"key": "complexity", "flag": "--complexity", "label": "复杂度", "type": "select", "choices": ["from_condition", "easy", "medium", "hard", "random"]},
+      {"key": "temperature", "flag": "--temperature", "label": "temperature", "type": "number"},
+      {"key": "top_p", "flag": "--top-p", "label": "top_p", "type": "number"},
+      {"key": "gen_batch", "flag": "--gen-batch", "label": "STEP AR 批大小", "type": "number"}
+    ],
+    "public_infer": [
+      {"key": "weight_folder", "flag": "--weight-folder", "label": "预训练权重目录", "type": "text"},
+      {"key": "data_dir", "flag": "--data-dir", "label": "数据根目录", "type": "text"},
+      {"key": "complexity", "flag": "--complexity", "label": "复杂度", "type": "select", "choices": ["from_condition", "easy", "medium", "hard", "random"]},
+      {"key": "temperature", "flag": "--temperature", "label": "temperature", "type": "number"},
+      {"key": "top_p", "flag": "--top-p", "label": "top_p", "type": "number"},
+      {"key": "gen_batch", "flag": "--gen-batch", "label": "STEP AR 批大小", "type": "number"},
+      {"key": "make_submission_zip", "flag": "--make-submission-zip", "label": "打包 submission.zip", "type": "bool"}
     ]
   }
 }
@@ -471,8 +535,75 @@ JSON
     exec python -u "${REPO_DIR}/scripts/infer_pipeline.py" "${INFER_ARGS[@]}"
     ;;
 
+  test)
+    activate_env
+    if [[ -z "${EXP_DIR_ARG}" ]]; then
+      echo "[run.sh] ERROR: --exp-dir is required for test" >&2
+      exit 1
+    fi
+    DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/eccv2026ws-cad-data}"
+    OUT="${OUTPUT_DIR_ARG:-${EXP_DIR_ARG}}"
+    mkdir -p "${EXP_DIR_ARG}/metrics" "${OUT}"
+    EVAL_ARGS=(
+      --exp-dir "${EXP_DIR_ARG}"
+      --output-dir "${OUT}"
+      --data-dir "${DATA_ROOT}"
+      --weight-folder "${WEIGHT_FOLDER}"
+      --gpu "${GPU}"
+      --split test
+      --complexity "${COMPLEXITY}"
+      --temperature "${TEMPERATURE}"
+      --top-p "${TOP_P}"
+      --gen-batch "${EVAL_GEN_BATCH}"
+      --eval-py "${EVAL_PY}"
+    )
+    if [[ -n "${DATASPLIT_ARG}" ]]; then
+      EVAL_ARGS+=(--datasplit "${DATASPLIT_ARG}")
+    fi
+    if [[ -n "${CHECKPOINT_ARG}" ]]; then
+      EVAL_ARGS+=(--checkpoint "${CHECKPOINT_ARG}")
+    fi
+    echo "[run.sh] test official split → ${EXP_DIR_ARG}/metrics/test.json" >&2
+    exec python -u "${REPO_DIR}/scripts/eval_eccv_split.py" "${EVAL_ARGS[@]}"
+    ;;
+
+  public_infer)
+    activate_env
+    if [[ -z "${EXP_DIR_ARG}" ]]; then
+      echo "[run.sh] ERROR: --exp-dir is required for public_infer" >&2
+      exit 1
+    fi
+    if [[ -z "${OUTPUT_DIR_ARG}" ]]; then
+      echo "[run.sh] ERROR: --output-dir is required for public_infer" >&2
+      exit 1
+    fi
+    DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/eccv2026ws-cad-data}"
+    mkdir -p "${EXP_DIR_ARG}/metrics" "${OUTPUT_DIR_ARG}/predictions"
+    EVAL_ARGS=(
+      --exp-dir "${EXP_DIR_ARG}"
+      --output-dir "${OUTPUT_DIR_ARG}"
+      --data-dir "${DATA_ROOT}"
+      --weight-folder "${WEIGHT_FOLDER}"
+      --gpu "${GPU}"
+      --split public_test
+      --complexity "${COMPLEXITY}"
+      --temperature "${TEMPERATURE}"
+      --top-p "${TOP_P}"
+      --gen-batch "${EVAL_GEN_BATCH}"
+      --make-submission-zip 1
+    )
+    if [[ -n "${DATASPLIT_ARG}" ]]; then
+      EVAL_ARGS+=(--datasplit "${DATASPLIT_ARG}")
+    fi
+    if [[ -n "${CHECKPOINT_ARG}" ]]; then
+      EVAL_ARGS+=(--checkpoint "${CHECKPOINT_ARG}")
+    fi
+    echo "[run.sh] public_infer → ${OUTPUT_DIR_ARG}/submission.zip" >&2
+    exec python -u "${REPO_DIR}/scripts/eval_eccv_split.py" "${EVAL_ARGS[@]}"
+    ;;
+
   *)
-    echo "[run.sh] unknown mode: ${MODE} (supported: capabilities, preprocess, train, infer)" >&2
+    echo "[run.sh] unknown mode: ${MODE} (supported: capabilities, preprocess, train, test, infer, public_infer)" >&2
     exit 1
     ;;
 esac
