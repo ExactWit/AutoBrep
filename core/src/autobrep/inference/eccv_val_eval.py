@@ -154,6 +154,10 @@ def _stack_conditions(
         for k, v in dxf.items():
             if not isinstance(v, torch.Tensor):
                 continue
+            # load_condition_for_sample returns batched (1, ...) tensors; strip
+            # the leading batch dim before stacking, else we get (B, 1, ...).
+            if v.ndim >= 1 and int(v.shape[0]) == 1:
+                v = v[0]
             dxf_lists.setdefault(k, []).append(v)
     images_b = torch.stack(images_list, dim=0).to(device=device, dtype=torch.float16)
     dxf_b: dict[str, torch.Tensor] = {}
