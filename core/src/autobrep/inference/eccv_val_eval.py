@@ -140,6 +140,8 @@ def _stack_conditions(
     dataset_root: Path,
     sample_ids: Sequence[str],
     device: torch.device,
+    *,
+    split: str = "val",
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], list[dict[str, Any]]]:
     """Load and stack conditions for distinct sample ids → batch dim B."""
     images_list = []
@@ -147,7 +149,7 @@ def _stack_conditions(
     metas: list[dict[str, Any]] = []
     for sid in sample_ids:
         images, dxf, meta = load_condition_for_sample(
-            dataset_root, sid, batch_size=1
+            dataset_root, sid, batch_size=1, split=split
         )
         images_list.append(images[0])
         metas.append(meta)
@@ -256,16 +258,20 @@ def generate_pred_steps_batched(
     vertex_threshold: float = 0.002,
     sewing_tolerance: float = 0.002,
     z_threshold: float = 0.0,
+    split: str = "val",
+    require_gt: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Batched AR generate (uses more VRAM), then serial decode/rebuild per sample.
 
     ``gen_batch_size`` controls how many conditioned prompts share one AR pass.
+    ``split`` selects condition root (``public_test`` → ``test_public/``).
     """
     was_training = transformer.training
     transformer.eval()
     results: list[dict[str, Any]] = []
     ids = [str(s) for s in sample_ids]
+    _ = require_gt  # reserved; callers filter ids before invoking
     try:
         for start in range(0, len(ids), max(1, int(gen_batch_size))):
             chunk = ids[start : start + max(1, int(gen_batch_size))]
@@ -273,7 +279,7 @@ def generate_pred_steps_batched(
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
                 images, dxf, metas = _stack_conditions(
-                    dataset_root, chunk, device
+                    dataset_root, chunk, device, split=split
                 )
                 with torch.no_grad():
                     autocast_ctx = (
