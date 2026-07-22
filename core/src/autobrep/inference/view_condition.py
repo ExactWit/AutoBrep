@@ -123,6 +123,13 @@ def load_condition_for_sample(
             batched[k] = v.detach().clone().reshape(1).expand(batch_size).contiguous()
         else:
             batched[k] = v.unsqueeze(0).expand(batch_size, *v.shape).contiguous()
+    n_prims_t = dxf.get("n_prims")
+    if hasattr(n_prims_t, "reshape"):
+        n_prims_val = int(n_prims_t.reshape(-1)[0].item())
+    elif hasattr(n_prims_t, "item"):
+        n_prims_val = int(n_prims_t.item())
+    else:
+        n_prims_val = int(n_prims_t)
     meta: Dict[str, Any] = {
         "source": "eccv_renders_plus_dxf",
         "sample_id": sid,
@@ -131,6 +138,6 @@ def load_condition_for_sample(
         "condition_root": cond_root,
         "paths": row,
         "images_shape": list(images.shape),
-        "n_prims": int(dxf["n_prims"].item()) if hasattr(dxf["n_prims"], "item") else int(dxf["n_prims"]),
+        "n_prims": n_prims_val,
     }
     return images.contiguous(), batched, meta
