@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -272,9 +273,23 @@ def generate_pred_steps_batched(
     results: list[dict[str, Any]] = []
     ids = [str(s) for s in sample_ids]
     _ = require_gt  # reserved; callers filter ids before invoking
+    n_total = len(ids)
+    bs = max(1, int(gen_batch_size))
+    n_chunks = (n_total + bs - 1) // bs if n_total else 0
+    t_all = time.perf_counter()
+    n_ok = 0
+    n_fail = 0
+    print(
+        f"[STEP gen] start n={n_total} gen_batch={bs} chunks={n_chunks} "
+        f"split={split} complexity={complexity}",
+        flush=True,
+    )
     try:
-        for start in range(0, len(ids), max(1, int(gen_batch_size))):
-            chunk = ids[start : start + max(1, int(gen_batch_size))]
+        for chunk_i, start in enumerate(range(0, n_total, bs)):
+            chunk = ids[start : start + bs]
+            t_chunk = time.perf_counter()
+            t_ar = 0.0
+            t_dec = 0.0
             try:
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
@@ -312,6 +327,7 @@ def generate_pred_steps_batched(
                             torch.tensor(prompt_rows, dtype=torch.long, device=device)
                             .view(len(chunk), 5)
                         )
+                        t_ar0 = time.perf_counter()
                         samples = transformer.generate(
                             prompt,
                             temperature,
@@ -322,8 +338,10 @@ def generate_pred_steps_batched(
                             prim_geom=dxf["prim_geom"],
                             prim_mask=dxf["prim_mask"],
                         )
+                        t_ar = time.perf_counter() - t_ar0
                         tokens = torch.concat([prompt, samples], -1).detach().cpu()
 
+                t_dec0 = time.perf_counter()
                 for i, sid in enumerate(chunk):
                     try:
                         status = _tokens_to_step(
@@ -347,7 +365,12 @@ def generate_pred_steps_batched(
                             "ok": False,
                             "error": f"exception:{type(exc).__name__}:{exc}",
                         }
+                    if status.get("ok"):
+                        n_ok += 1
+                    else:
+                        n_fail += 1
                     results.append(status)
+                t_dec = time.perf_counter() - t_dec0
             except Exception as exc:  # noqa: BLE001
                 for sid in chunk:
                     results.append(
@@ -357,8 +380,28 @@ def generate_pred_steps_batched(
                             "error": f"exception:{type(exc).__name__}:{exc}",
                         }
                     )
+                    n_fail += 1
+            done = n_ok + n_fail
+            elapsed = max(time.perf_counter() - t_all, 1e-6)
+            rate_h = done / elapsed * 3600.0
+            eta_s = (n_total - done) / max(done / elapsed, 1e-9) if done else float("nan")
+            eta_h = eta_s / 3600.0 if done else float("nan")
+            chunk_s = time.perf_counter() - t_chunk
+            print(
+                f"[STEP gen] {done}/{n_total} ({100.0 * done / max(n_total, 1):.1f}%) "
+                f"ok={n_ok} fail={n_fail} | {rate_h:.1f}/h ETA {eta_h:.1f}h | "
+                f"chunk {chunk_i + 1}/{n_chunks} {chunk_s:.1f}s "
+                f"(AR {t_ar:.1f}s + decode {t_dec:.1f}s) ids={chunk}",
+                flush=True,
+            )
     finally:
         transformer.train(was_training)
+    elapsed = time.perf_counter() - t_all
+    print(
+        f"[STEP gen] done {n_ok + n_fail}/{n_total} ok={n_ok} fail={n_fail} "
+        f"in {elapsed / 60.0:.1f} min ({(n_ok + n_fail) / max(elapsed, 1e-6) * 3600.0:.1f}/h)",
+        flush=True,
+    )
     return results
 
 
