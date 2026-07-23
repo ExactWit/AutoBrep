@@ -13,6 +13,7 @@ from transformers import AutoModel, AutoTokenizer
 from autobrep.data.token_mapping import MMTokenIndex
 from autobrep.models.autoregressive_samplers import TopP
 from autobrep.models.dataclass import BrepGenCAD, CheckpointPaths
+from autobrep.models.generate_prepend import generate_with_prepend_kv_cache
 from autobrep.models.point_cloud_encoder import PointCloudConditionEncoder
 from autobrep.models.view_condition_encoder import ViewConditionEncoder
 from autobrep.models.vaes import EdgeFSQVAE, SurfaceFSQVAE
@@ -789,15 +790,15 @@ class AutoBrepPCModel(AutoBrepModel):
         prepend = None
         if point_cloud is not None:
             prepend = self.encode_point_cloud(point_cloud)
-        # KV cache + prepend_embeds is fragile across steps; disable cache for PC.
-        return self.cad_gpt.ar_decoder.generate(
-            prompts=prompt,
+        # Prepend condition only on first decode step so KV cache stays valid.
+        return generate_with_prepend_kv_cache(
+            self.cad_gpt.ar_decoder,
+            prompt,
             seq_len=self.hparams.max_seq,
+            prepend_embeds=prepend,
             eos_token=MMTokenIndex.EOS.value,
             temperature=temperature,
             filter_logits_fn=partial(top_p, thres=threshold),
-            cache_kv=False,
-            prepend_embeds=prepend,
         )
 
 
@@ -989,12 +990,13 @@ class AutoBrepViewModel(AutoBrepModel):
             prepend = self.encode_views(
                 images, prim_types, prim_linetypes, prim_geom, prim_mask
             )
-        return self.cad_gpt.ar_decoder.generate(
-            prompts=prompt,
+        # Prepend condition only on first decode step so KV cache stays valid.
+        return generate_with_prepend_kv_cache(
+            self.cad_gpt.ar_decoder,
+            prompt,
             seq_len=self.hparams.max_seq,
+            prepend_embeds=prepend,
             eos_token=MMTokenIndex.EOS.value,
             temperature=temperature,
             filter_logits_fn=partial(top_p, thres=threshold),
-            cache_kv=False,
-            prepend_embeds=prepend,
         )
