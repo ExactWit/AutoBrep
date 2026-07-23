@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--official-val-gen-batch",
         type=int,
-        default=4,
+        default=1,
         help="AR generate batch size during official STEP eval (use spare VRAM)",
     )
     p.add_argument(

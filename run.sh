@@ -54,12 +54,12 @@ LIMIT_TRAIN="${LIMIT_TRAIN:--1}"
 LIMIT_VAL="${LIMIT_VAL:--1}"
 OFFICIAL_VAL_SAMPLES="${OFFICIAL_VAL_SAMPLES:--1}"
 OFFICIAL_VAL_SAMPLES_MID="${OFFICIAL_VAL_SAMPLES_MID:-24}"
-OFFICIAL_VAL_GEN_BATCH="${OFFICIAL_VAL_GEN_BATCH:-2}"
+OFFICIAL_VAL_GEN_BATCH="${OFFICIAL_VAL_GEN_BATCH:-1}"
 OFFICIAL_VAL_EVERY="${OFFICIAL_VAL_EVERY:-0}"
 OFFICIAL_VAL_EPOCH_FRAC="${OFFICIAL_VAL_EPOCH_FRAC:-0.25}"
 NO_OFFICIAL_VAL="${NO_OFFICIAL_VAL:-0}"
 EVAL_PY="${EVAL_PY:-/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py}"
-EVAL_GEN_BATCH="${EVAL_GEN_BATCH:-2}"
+EVAL_GEN_BATCH="${EVAL_GEN_BATCH:-1}"
 MAKE_SUBMISSION_ZIP="${MAKE_SUBMISSION_ZIP:-0}"
 # ECCV view-cond default: epoch schedule on small set (override with --max-steps)
 ECCV_MAX_EPOCHS="${ECCV_MAX_EPOCHS:-50}"
@@ -175,7 +175,7 @@ case "${MODE}" in
       "num_workers": 2,
       "official_val_samples": -1,
       "official_val_samples_mid": 24,
-      "official_val_gen_batch": 2,
+      "official_val_gen_batch": 1,
       "official_val_every": 0,
       "official_val_epoch_frac": 0.25,
       "no_official_val": false,
@@ -187,7 +187,7 @@ case "${MODE}" in
       "complexity": "from_condition",
       "temperature": 1.0,
       "top_p": 0.9,
-      "gen_batch": 2
+      "gen_batch": 1
     },
     "infer": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
@@ -213,7 +213,7 @@ case "${MODE}" in
       "complexity": "from_condition",
       "temperature": 1.0,
       "top_p": 0.9,
-      "gen_batch": 2,
+      "gen_batch": 1,
       "make_submission_zip": true
     }
   },
