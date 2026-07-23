@@ -126,7 +126,7 @@ def parse_args() -> argparse.Namespace:
         choices=["val", "test", "public_test"],
     )
     p.add_argument("--max-samples", type=int, default=-1)
-    p.add_argument("--gen-batch", type=int, default=2)
+    p.add_argument("--gen-batch", type=int, default=1)
     p.add_argument("--complexity", default="from_condition")
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--top-p", type=float, default=0.9)
