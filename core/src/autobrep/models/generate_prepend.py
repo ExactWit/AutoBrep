@@ -1,10 +1,14 @@
 """AR generate with continuous prepend_embeds + KV cache.
 
-x_transformers' AutoregressiveWrapper.generate() forwards ``prepend_embeds`` on
-*every* decode step, which is unsafe with ``cache_kv=True``. Correct policy:
+x_transformers applies rotary to ``cat(cached_kv, new_kv)``. Freqs must span the
+full cached length, which requires ``input_not_include_cache=True`` so
+``seq_pos_offset = cache.cache_length`` and positions are
+``arange(new_len + cache_length)``.
 
-1. Prepend continuous condition only on the **first** forward.
-2. Keep the full KV cache afterward (do not left-truncate; condition sits at head).
+Policy:
+1. Step 0: forward with ``prepend_embeds`` (condition + prompt).
+2. Later steps: feed only the newest token(s); do **not** re-pass prepend.
+3. Always pass ``input_not_include_cache=True`` when using the KV cache.
 """
 
 from __future__ import annotations
@@ -34,11 +38,8 @@ def generate_with_prepend_kv_cache(
     Sample up to ``seq_len`` new tokens after ``prompts``.
 
     Returns only the newly generated tokens (same contract as
-    ``AutoregressiveWrapper.generate``).
-
-    When ``prepend_embeds`` is set we keep the full KV cache (no left-truncation):
-    condition K/V sit at the head and must not be slid away. Rotary +
-    ``can_cache_kv_outside_max_seq_len`` makes this safe for AutoBrep.
+    ``AutoregressiveWrapper.generate``). Greedy outputs match
+    ``cache_kv=False`` when ``prepend_embeds`` is used.
     """
     if filter_logits_fn is None:
         filter_logits_fn = default_top_p
@@ -48,9 +49,20 @@ def generate_with_prepend_kv_cache(
         pad_value = getattr(ar_wrapper, "pad_value", 0)
 
     net = ar_wrapper.net
-    max_seq_len = ar_wrapper.max_seq_len
     greedy = temperature == 0.0
     has_prepend = prepend_embeds is not None
+
+    # No continuous prefix → stock path (already KV-cached).
+    if not has_prepend:
+        return ar_wrapper.generate(
+            prompts=prompts,
+            seq_len=seq_len,
+            eos_token=eos_token,
+            temperature=temperature,
+            filter_logits_fn=filter_logits_fn,
+            filter_kwargs=filter_kwargs,
+            cache_kv=True,
+        )
 
     out = prompts
     prompt_len = prompts.shape[-1]
@@ -61,23 +73,16 @@ def generate_with_prepend_kv_cache(
     ar_wrapper.eval()
     try:
         for step in range(seq_len):
-            # With continuous prepend, never left-truncate tokens/cache (would drop
-            # condition). Without prepend, match stock sliding window.
-            if has_prepend:
+            if step == 0:
                 x = out
+                step_kwargs = {
+                    "prepend_embeds": prepend_embeds,
+                    "input_not_include_cache": True,
+                }
             else:
-                x = out[:, -max_seq_len:]
-                if cache is not None:
-                    for inter in cache.attn_intermediates:
-                        if inter.layer_type == "a":
-                            inter.cached_kv = [
-                                t[..., -(max_seq_len - 1) :, :] for t in inter.cached_kv
-                            ]
-
-            # Prepend continuous condition only on the first forward.
-            step_kwargs = {}
-            if has_prepend and step == 0:
-                step_kwargs["prepend_embeds"] = prepend_embeds
+                # Newest token only; cache already holds condition + past tokens.
+                x = out[:, -1:]
+                step_kwargs = {"input_not_include_cache": True}
 
             logits, new_cache = net(
                 x,
