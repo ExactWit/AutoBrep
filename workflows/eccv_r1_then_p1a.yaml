@@ -1,0 +1,53 @@
+# R1 GT test (p0 tip + parent 3view weights) → P1-A 图元 Encoder 训练
+# 硬门禁：R1 跑完可先看报告；P1a 已按你的要求自动接上（图元 token/prefix 方案）
+name: eccv-r1-then-p1a
+gpu: "0"
+steps:
+  - label: R1-ckpt-gt-test
+    mode: test
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p0
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: R1-ckpt-gt-test
+    # absolute path: p0-tagged host with symlinks to 260723-162838 ckpts
+    run_id: "/data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/stage_gates/R1_ckpt_host__train"
+    note: |
+      【R1 / 硬门禁1 / launcher 可见】
+      目的：用现有 3view 权重（260723-162838）+ eccv-3view-p0 tip（analytic postprocess）跑官方 GT test。
+      parent/host：stage_gates/R1_ckpt_host__train（symlink ckpt，非正式训练）。
+      对照基线：260725-002218（summary≈0.046, gen≈35.3%）。
+      R0 参考：事后 analytic Δsummary≈+0.0003。
+      成功标准：写出 metrics/test.json；完成后写 docs/eccv_stage_reports/R1_latest.md。
+      说明：先前手动 eval 已停，改由此 Job 重跑以便 UI 可见。
+    enqueue: true
+    train_config:
+      gen_batch: 1
+      complexity: from_condition
+      postprocess_analytic: 1
+
+  - label: p1a-prim-token-train
+    mode: train
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p1a
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: p1a-prim-token-train
+    note: |
+      【P1-A / 图元 token 方案正式训练】entry=eccv-3view-p1a（feat/p1-prim-encoder-prefix）。
+      内容：TechDraw 图元序列 → PrimTransformerEncoder → soft prefix（M=64）注入条件；冻结 AR+FSQ，只训图元侧。
+      use_prim_seq_encoder=1；50 epoch；mid official val=24 @ frac=0.25。
+      目的：验证新图元 token/编码能否抬升相对 260725-002218 / R1 的官方分。
+      接在 R1 之后（同 GPU0）；R1 是评测不改权重，P1a 才是新训。
+    enqueue: true
+    train_config:
+      batch_size: 2
+      max_epochs: 50
+      max_steps: -1
+      accumulate_grad_batches: 2
+      lr: 0.0001
+      official_val_samples_mid: 24
+      official_val_gen_batch: 1
+      official_val_epoch_frac: 0.25
+      complexity: from_condition
+      use_prim_seq_encoder: 1
