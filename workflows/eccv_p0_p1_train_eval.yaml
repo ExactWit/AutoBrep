@@ -1,0 +1,132 @@
+# ECCV P0→P1 训评队列（GPU0）
+# 对照旧 GT test: 260725-002218；parent train: 260723-162838
+name: eccv-p0-p1-train-eval
+gpu: "0"
+steps:
+  - label: p0-metrics-smoke
+    mode: train
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p0
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: p0-metrics-smoke
+    note: "P0 fast-metrics smoke; mid=24; compare vs 260725-002218"
+    enqueue: true
+    train_config:
+      batch_size: 2
+      max_epochs: 2
+      max_steps: -1
+      accumulate_grad_batches: 2
+      lr: 0.0001
+      official_val_samples_mid: 24
+      official_val_gen_batch: 1
+      official_val_epoch_frac: 1.0
+      complexity: from_condition
+
+  - label: p0-3view-retrain
+    mode: train
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p0
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: p0-3view-retrain
+    note: "P0 postprocess+split full train; parent=260723-162838; compare vs 260725-002218 GT test"
+    enqueue: true
+    train_config:
+      batch_size: 2
+      max_epochs: 50
+      max_steps: -1
+      accumulate_grad_batches: 2
+      lr: 0.0001
+      official_val_samples_mid: 24
+      official_val_gen_batch: 1
+      official_val_epoch_frac: 0.25
+      complexity: from_condition
+
+  - label: p0-gt-test
+    mode: test
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p0
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: p0-gt-test
+    note: "P0 official GT test; compare vs 260725-002218; parent train step1"
+    enqueue: true
+    run_id_from_step: 1
+    train_config:
+      gen_batch: 1
+      complexity: from_condition
+      postprocess_analytic: 1
+
+  - label: p1a-prefix-train
+    mode: train
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p1a
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: p1a-prefix-train
+    note: "P1a prim-encoder prefix; parent=260723-162838; compare vs p0 / 260725-002218"
+    enqueue: true
+    train_config:
+      batch_size: 2
+      max_epochs: 50
+      max_steps: -1
+      accumulate_grad_batches: 2
+      lr: 0.0001
+      official_val_samples_mid: 24
+      official_val_gen_batch: 1
+      official_val_epoch_frac: 0.25
+      complexity: from_condition
+      use_prim_seq_encoder: 1
+
+  - label: p1a-gt-test
+    mode: test
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p1a
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: p1a-gt-test
+    note: "P1a GT test; compare vs p0 / 260725-002218"
+    enqueue: true
+    run_id_from_step: 3
+    train_config:
+      gen_batch: 1
+      complexity: from_condition
+      postprocess_analytic: 1
+
+  - label: p1b-xattn-train
+    mode: train
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p1b
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: p1b-xattn-train
+    note: "P1b decoder xattn; parent=260723-162838; compare vs p1a/p0 / 260725-002218"
+    enqueue: true
+    train_config:
+      batch_size: 2
+      max_epochs: 50
+      max_steps: -1
+      accumulate_grad_batches: 2
+      lr: 0.0001
+      official_val_samples_mid: 24
+      official_val_gen_batch: 1
+      official_val_epoch_frac: 0.25
+      complexity: from_condition
+      use_prim_seq_encoder: 1
+      use_decoder_cross_attn: 1
+
+  - label: p1b-gt-test
+    mode: test
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p1b
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: p1b-gt-test
+    note: "P1b GT test; compare vs p1a/p0 / 260725-002218"
+    enqueue: true
+    run_id_from_step: 5
+    train_config:
+      gen_batch: 1
+      complexity: from_condition
+      postprocess_analytic: 1
