@@ -20,26 +20,24 @@
 | parent train | `260723-162838` | 3view-geom |
 | GT test（旧） | `260725-002218` | gen≈35.3%, summary≈0.046 |
 
-## R1 启动示例（门禁通过后）
+## R1 启动（门禁通过后）
+
+> 注意：launcher 对 `run_id=260723-162838`（geom tip）会继承 parent entry，**checkout 到无 postprocess 的 tip**。  
+> R1 请在 **`eccv-p0` tip** 上直接跑（当前正式路径）：
 
 ```bash
-# 用 HTTP / workflow 单步；run_id 指向 parent train
-curl -s -X POST http://127.0.0.1:8765/api/runs/start \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "repo_name":"AutoBrep",
-    "entry_id":"eccv-3view-p0",
-    "dataset_id":"eccv2026ws-cad-data",
-    "task":"gen",
-    "mode":"test",
-    "gpu":"0",
-    "tag":"R1-ckpt-gt-test",
-    "run_id":"260723-162838",
-    "enqueue":true,
-    "note":"【R1】现有 3view ckpt + postprocess_analytic=1 GT test；对照 260725-002218；硬门禁1",
-    "train_config":{"gen_batch":1,"complexity":"from_condition","postprocess_analytic":1}
-  }'
-exp_launcher queue tick --json
+cd /home/divisor/workspace/repo/AutoBrep && git checkout eccv-p0
+conda activate autobrep
+EXP=/data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/stage_gates/R1_ckpt_gt_test
+CKPT=/data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/260723-162838/eccv-3view-geom-resume__train/checkpoints/last.ckpt
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=core/src python -u scripts/eval_eccv_split.py \
+  --exp-dir "$EXP" --output-dir "$EXP" \
+  --data-dir /data/hdd/datasets/eccv2026ws-cad-data \
+  --weight-folder /data/hdd/outputs/AutoBrep \
+  --checkpoint "$CKPT" --gpu 0 --split test \
+  --complexity from_condition --gen-batch 1 --postprocess-analytic 1
+# 完成后写报告：
+python scripts/eccv_stage_r1_write_report.py --test-json "$EXP/metrics/test.json" --run-dir "$EXP"
 ```
 
 ## 报告填写 checklist
