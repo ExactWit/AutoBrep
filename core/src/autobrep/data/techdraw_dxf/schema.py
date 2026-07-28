@@ -52,19 +52,42 @@ MAX_PRIMS_PER_VIEW = 128
 NUM_TD_VIEWS = 3
 SPLINE_SAMPLE_POINTS = 4
 
+GROUP_ROLE_OUTER = "outer"
+GROUP_ROLE_INNER = "inner"
+GROUP_ROLE_ISOLATED = "isolated"
+GROUP_ROLE_NAMES = {
+    0: GROUP_ROLE_ISOLATED,
+    1: GROUP_ROLE_OUTER,
+    2: GROUP_ROLE_INNER,
+}
+NAME_TO_GROUP_ROLE = {name: idx for idx, name in GROUP_ROLE_NAMES.items()}
+NUM_GROUP_ROLES = 3
+
 
 @dataclass
 class PrimIR:
     type: str
     linetype: str = "solid"
     params: dict[str, Any] = field(default_factory=dict)
+    group_id: int = 0
+    group_role: str = GROUP_ROLE_ISOLATED
 
     @property
     def type_id(self) -> int:
         return NAME_TO_PRIM_TYPE.get(self.type, PRIM_OTHER)
 
+    @property
+    def group_role_id(self) -> int:
+        return NAME_TO_GROUP_ROLE.get(self.group_role, 0)
+
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.type, "linetype": self.linetype, "params": self.params}
+        return {
+            "type": self.type,
+            "linetype": self.linetype,
+            "params": self.params,
+            "group_id": int(self.group_id),
+            "group_role": self.group_role,
+        }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PrimIR":
@@ -72,6 +95,8 @@ class PrimIR:
             type=str(payload.get("type", "other")),
             linetype=str(payload.get("linetype", "solid")),
             params=dict(payload.get("params") or {}),
+            group_id=int(payload.get("group_id", 0) or 0),
+            group_role=str(payload.get("group_role", GROUP_ROLE_ISOLATED)),
         )
 
 
@@ -127,5 +152,11 @@ __all__ = [
     "MAX_PRIMS_PER_VIEW",
     "NUM_TD_VIEWS",
     "SPLINE_SAMPLE_POINTS",
+    "GROUP_ROLE_OUTER",
+    "GROUP_ROLE_INNER",
+    "GROUP_ROLE_ISOLATED",
+    "GROUP_ROLE_NAMES",
+    "NAME_TO_GROUP_ROLE",
+    "NUM_GROUP_ROLES",
     "asdict",
 ]

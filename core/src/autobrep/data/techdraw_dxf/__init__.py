@@ -2,6 +2,8 @@
 
 from autobrep.data.techdraw_dxf.extract import extract_dxf_primitives
 from autobrep.data.techdraw_dxf.extract_svg import extract_svg_primitives
+from autobrep.data.techdraw_dxf.filter_merge import filter_and_merge
+from autobrep.data.techdraw_dxf.loops import assign_loop_groups
 from autobrep.data.techdraw_dxf.schema import (
     GEOM_DIM,
     MAX_PRIMS,
@@ -22,6 +24,8 @@ from autobrep.data.techdraw_dxf.tensorize import (
 __all__ = [
     "extract_dxf_primitives",
     "extract_svg_primitives",
+    "filter_and_merge",
+    "assign_loop_groups",
     "merge_dxfir",
     "split_into_views",
     "tensorize_dxf",

@@ -12,14 +12,18 @@ from PIL import Image
 from autobrep.data.abc_data import ARDataModule
 from autobrep.data.serialize import deserialize_array
 from autobrep.data.techdraw_dxf import (
+    assign_loop_groups,
     empty_dxf_view_tensors,
     extract_dxf_primitives,
     extract_svg_primitives,
+    filter_and_merge,
     merge_dxfir,
     split_into_views,
     tensorize_dxf_views,
     tensors_to_torch,
 )
+from autobrep.data.techdraw_dxf.schema import DxfIR
+
 
 VIEW_SIZE = 224
 RENDER_COLS = (
@@ -78,9 +82,21 @@ def load_techdraw_geometry(
     if not parts:
         return empty_dxf_view_tensors()
     try:
-        merged = merge_dxfir(parts)
+        merged = filter_and_merge(merge_dxfir(parts))
         views = split_into_views(merged)
-        return tensors_to_torch(tensorize_dxf_views(views))
+        # Per-view loop grouping (group_id / group_role); missing → defaults 0.
+        grouped: list[DxfIR] = []
+        for v in views:
+            prims = assign_loop_groups(list(v.prims[: int(v.n_prims)]))
+            grouped.append(
+                DxfIR(
+                    n_prims=len(prims),
+                    prims=prims,
+                    bbox_min=v.bbox_min,
+                    bbox_max=v.bbox_max,
+                )
+            )
+        return tensors_to_torch(tensorize_dxf_views(grouped))
     except Exception:  # noqa: BLE001
         return empty_dxf_view_tensors()
 
@@ -203,4 +219,6 @@ class ECCVViewDataModule(ARDataModule):
         output["prim_linetypes"] = torch.int64
         output["prim_geom"] = torch.float32
         output["prim_mask"] = torch.bool
+        output["prim_group_ids"] = torch.int64
+        output["prim_group_roles"] = torch.int64
         return output
