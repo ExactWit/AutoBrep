@@ -480,15 +480,21 @@ JSON
       if [[ "${NO_OFFICIAL_VAL}" == "1" || "${NO_OFFICIAL_VAL}" == "true" || "${NO_OFFICIAL_VAL}" == "True" ]]; then
         TRAIN_ARGS+=(--no-official-val)
       fi
-      # P1/P2 flags: only forward when explicitly set (older tips lack these argparse opts).
-      if [[ -n "${USE_PRIM_SEQ_ENCODER}" ]]; then
-        TRAIN_ARGS+=(--use-prim-seq-encoder "${USE_PRIM_SEQ_ENCODER}")
+      # P1/P2 flags: only forward when explicitly enabled (1).
+      # Launcher may inject capability defaults of 0; older tips lack those argparse opts.
+      if [[ "${USE_PRIM_SEQ_ENCODER}" == "1" ]]; then
+        TRAIN_ARGS+=(
+          --use-prim-seq-encoder 1
+          --prim-d-model "${PRIM_D_MODEL}"
+          --prim-n-layers "${PRIM_N_LAYERS}"
+          --prim-max-seq "${PRIM_MAX_SEQ}"
+        )
       fi
-      if [[ -n "${PRIM_D_MODEL}" && -n "${USE_PRIM_SEQ_ENCODER}" ]]; then
-        TRAIN_ARGS+=(--prim-d-model "${PRIM_D_MODEL}" --prim-n-layers "${PRIM_N_LAYERS}" --prim-max-seq "${PRIM_MAX_SEQ}")
-      fi
-      if [[ -n "${USE_DECODER_CROSS_ATTN}" ]]; then
-        TRAIN_ARGS+=(--use-decoder-cross-attn "${USE_DECODER_CROSS_ATTN}" --decoder-xattn-heads "${DECODER_XATTN_HEADS}")
+      if [[ "${USE_DECODER_CROSS_ATTN}" == "1" ]]; then
+        TRAIN_ARGS+=(
+          --use-decoder-cross-attn 1
+          --decoder-xattn-heads "${DECODER_XATTN_HEADS}"
+        )
       fi
       if [[ "${ENABLE_AUX_VIEW_BBOX}" == "1" ]]; then
         TRAIN_ARGS+=(--enable-aux-view-bbox 1 --aux-view-bbox-weight "${AUX_VIEW_BBOX_WEIGHT}")
