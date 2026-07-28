@@ -866,6 +866,8 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_d_model: int = 512,
         prim_n_layers: int = 4,
         prim_max_seq: int = 384,
+        use_decoder_cross_attn: bool = False,
+        decoder_xattn_heads: int = 8,
     ) -> None:
         super().__init__(
             surf_fsq_ckpt=surf_fsq_ckpt,
@@ -886,6 +888,10 @@ class AutoBrepViewModel(AutoBrepModel):
             drop_decoder=drop_decoder,
         )
 
+        # P1-B needs prim sequence encoder for K/V memory.
+        if use_decoder_cross_attn:
+            use_prim_seq_encoder = True
+
         self.view_encoder = ViewConditionEncoder(
             dim=dim,
             hidden=view_hidden,
@@ -900,6 +906,23 @@ class AutoBrepViewModel(AutoBrepModel):
             prim_max_seq=prim_max_seq,
         )
 
+        self.use_decoder_cross_attn = bool(use_decoder_cross_attn)
+        self.decoder_xattn = None
+        self.encoder_mem_proj = None
+        if self.use_decoder_cross_attn:
+            from autobrep.models.decoder_cross_attn import (
+                DecoderCrossAttnInjector,
+                EncoderMemoryProjector,
+            )
+
+            self.encoder_mem_proj = EncoderMemoryProjector(view_hidden, dim)
+            self.decoder_xattn = DecoderCrossAttnInjector(
+                self.cad_gpt.ar_decoder.net.attn_layers,
+                dim=dim,
+                n_heads=decoder_xattn_heads,
+                dropout=view_dropout,
+            )
+
         if ar_ckpt and not inference_mode:
             self.load_pretrained_ar(ar_ckpt)
 
@@ -910,9 +933,15 @@ class AutoBrepViewModel(AutoBrepModel):
             if hasattr(self, "edge_vae"):
                 self.edge_vae.requires_grad_(False)
 
-        self.trainable_params = [
-            p for p in self.view_encoder.parameters() if p.requires_grad
-        ]
+        trainable = [p for p in self.view_encoder.parameters() if p.requires_grad]
+        if self.encoder_mem_proj is not None:
+            trainable += list(self.encoder_mem_proj.parameters())
+        if self.decoder_xattn is not None:
+            # Unfreeze only injected cross-attn (backbone stays frozen)
+            for p in self.decoder_xattn.cross_layers.parameters():
+                p.requires_grad_(True)
+            trainable += list(self.decoder_xattn.cross_layers.parameters())
+        self.trainable_params = trainable
         # Level-1 fast metrics on validation (PPL / token acc / light topo).
         self.enable_fast_metrics: bool = True
 
@@ -920,7 +949,8 @@ class AutoBrepViewModel(AutoBrepModel):
         n_total = sum(p.numel() for p in self.parameters())
         print(
             f"[AutoBrepViewModel] trainable={n_train/1e6:.2f}M / total={n_total/1e6:.2f}M "
-            f"(freeze_backbone={freeze_backbone})"
+            f"(freeze_backbone={freeze_backbone} "
+            f"prim_enc={use_prim_seq_encoder} xattn={self.use_decoder_cross_attn})"
         )
 
     def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
@@ -978,7 +1008,7 @@ class AutoBrepViewModel(AutoBrepModel):
             images = images.to(dtype=param_dtype)
         if prim_geom.dtype != param_dtype and prim_geom.is_floating_point():
             prim_geom = prim_geom.to(dtype=param_dtype)
-        return self.view_encoder(
+        prepend = self.view_encoder(
             images,
             prim_types,
             prim_linetypes,
@@ -986,6 +1016,19 @@ class AutoBrepViewModel(AutoBrepModel):
             prim_mask,
             prim_group_roles=prim_group_roles,
         )
+        if self.use_decoder_cross_attn and self.decoder_xattn is not None:
+            seq, mask = self.view_encoder.encode_prim_sequence(
+                prim_types,
+                prim_linetypes,
+                prim_geom,
+                prim_mask,
+                prim_group_roles=prim_group_roles,
+            )
+            mem = self.encoder_mem_proj(seq.to(dtype=param_dtype))
+            self.decoder_xattn.set_context(mem, mask)
+        elif self.decoder_xattn is not None:
+            self.decoder_xattn.clear_context()
+        return prepend
 
     @torch.inference_mode()
     def predict_complexity_from_condition(

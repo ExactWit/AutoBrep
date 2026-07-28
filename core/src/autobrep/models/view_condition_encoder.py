@@ -341,3 +341,36 @@ class ViewConditionEncoder(nn.Module):
         bos = self.bos_view.expand(b, -1, -1)
         eos = self.eos_view.expand(b, -1, -1)
         return torch.cat([bos, tokens, eos], dim=1)
+
+    def encode_prim_sequence(
+        self,
+        prim_types: torch.Tensor,
+        prim_linetypes: torch.Tensor,
+        prim_geom: torch.Tensor,
+        prim_mask: torch.Tensor,
+        prim_group_roles: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Return raw prim encoder sequence (B, L, hidden) + mask for P1-B cross-attn.
+
+        Requires ``use_prim_seq_encoder=True``.
+        """
+        if not self.use_prim_seq_encoder or self.prim_encoder is None:
+            raise RuntimeError("encode_prim_sequence requires use_prim_seq_encoder=True")
+        if prim_types.ndim == 2:
+            prim_types = prim_types.unsqueeze(1).expand(-1, self.num_td_views, -1)
+            prim_linetypes = prim_linetypes.unsqueeze(1).expand(-1, self.num_td_views, -1)
+            prim_geom = prim_geom.unsqueeze(1).expand(-1, self.num_td_views, -1, -1)
+            prim_mask = prim_mask.unsqueeze(1)
+            if prim_group_roles is not None:
+                prim_group_roles = prim_group_roles.unsqueeze(1)
+            if self.num_td_views > 1:
+                prim_mask = prim_mask.repeat(1, self.num_td_views, 1)
+                prim_mask[:, 1:] = False
+        return self.prim_encoder(
+            prim_types,
+            prim_linetypes,
+            prim_geom.float(),
+            prim_mask,
+            prim_group_roles=prim_group_roles,
+        )

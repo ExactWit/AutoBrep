@@ -40,6 +40,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--prim-d-model", type=int, default=512)
     p.add_argument("--prim-n-layers", type=int, default=4)
     p.add_argument("--prim-max-seq", type=int, default=384)
+    p.add_argument(
+        "--use-decoder-cross-attn",
+        type=int,
+        default=1,
+        help="P1-B: inject per-layer AR cross-attn (implies prim encoder)",
+    )
+    p.add_argument("--decoder-xattn-heads", type=int, default=8)
     p.add_argument("--accumulate-grad-batches", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
@@ -238,6 +245,7 @@ def main() -> int:
         "prim_d_model": args.prim_d_model,
         "prim_n_layers": args.prim_n_layers,
         "prim_max_seq": args.prim_max_seq,
+        "use_decoder_cross_attn": bool(getattr(args, "use_decoder_cross_attn", 0)),
         "freeze_backbone": True,
         "load_point_cloud": False,
         "loss": "AR token CE (prepend excluded)",
@@ -290,6 +298,8 @@ def main() -> int:
     model_args["prim_d_model"] = int(args.prim_d_model)
     model_args["prim_n_layers"] = int(args.prim_n_layers)
     model_args["prim_max_seq"] = int(args.prim_max_seq)
+    model_args["use_decoder_cross_attn"] = bool(args.use_decoder_cross_attn)
+    model_args["decoder_xattn_heads"] = int(args.decoder_xattn_heads)
     model_args["surf_fsq_ckpt"] = str(weight / "surf-fsq.ckpt")
     model_args["edge_fsq_ckpt"] = str(weight / "edge-fsq.ckpt")
     model_args["ar_ckpt"] = str(weight / "ar.ckpt")

@@ -24,6 +24,9 @@ eccv-3view-geom (baseline @ 0b2c8b9)
 
 P1-A note 模板：`P1a prim-encoder prefix; parent=260723-162838; compare vs p0 / 260725-002218`
 
+P1-B note 模板：`P1b decoder xattn; parent=260723-162838; compare vs p1a/p0 / 260725-002218`  
+CLI：`--use-decoder-cross-attn 1`（隐含 `--use-prim-seq-encoder 1`）。
+
 ## 开关
 
 | 开关 | 默认 | 说明 |

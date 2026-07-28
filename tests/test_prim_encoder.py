@@ -53,9 +53,15 @@ def test_view_encoder_prim_seq_mode():
     geom = torch.randn(b, 3, 16, 12)
     mask = torch.ones(b, 3, 16, dtype=torch.bool)
     roles = torch.zeros(b, 3, 16, dtype=torch.long)
+    enc.eval()
     out = enc(images, types, lts, geom, mask, prim_group_roles=roles)
     assert out.shape == (b, 8 + 2, 128)
+    enc.train()
+    out = enc(images, types, lts, geom, mask, prim_group_roles=roles)
     loss = out.sum()
     loss.backward()
-    # Encoder params should get grads
-    assert any(p.grad is not None for p in enc.prim_encoder.parameters())
+    # Encoder params should get grads (img path always; prim when not dropped)
+    assert any(
+        p.grad is not None
+        for p in list(enc.prim_encoder.parameters()) + list(enc.img_proj.parameters())
+    )
