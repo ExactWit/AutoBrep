@@ -175,10 +175,24 @@ def main() -> int:
                 )
             except Exception as exc:  # noqa: BLE001
                 info = {"src": str(sp), "ok": False, "error": str(exc)}
+            if not info.get("ok"):
+                # Keep full eval coverage: fall back to raw STEP on failure.
+                try:
+                    shutil.copy2(sp, dst)
+                    info["fallback_raw"] = True
+                    info["ok_for_eval"] = True
+                except OSError as copy_exc:
+                    info["fallback_raw"] = False
+                    info["ok_for_eval"] = False
+                    info["copy_error"] = str(copy_exc)
+            else:
+                info["ok_for_eval"] = True
+                info["fallback_raw"] = False
             report.append(info)
             if (i + 1) % 20 == 0 or i + 1 == len(steps):
                 print(
-                    f"[R0] postprocess {i + 1}/{len(steps)} last_ok={info.get('ok')}",
+                    f"[R0] postprocess {i + 1}/{len(steps)} "
+                    f"last_ok={info.get('ok')} fallback={info.get('fallback_raw')}",
                     flush=True,
                 )
         (analytic_pred / "postprocess_report.json").write_text(
@@ -186,7 +200,11 @@ def main() -> int:
             encoding="utf-8",
         )
         n_ok = sum(1 for r in report if r.get("ok"))
-        print(f"[R0] postprocess ok={n_ok}/{len(report)} → {analytic_pred}", flush=True)
+        n_fb = sum(1 for r in report if r.get("fallback_raw"))
+        print(
+            f"[R0] postprocess ok={n_ok}/{len(report)} fallback_raw={n_fb} → {analytic_pred}",
+            flush=True,
+        )
 
     # Prepare eval workdir: copy gt + analytic pred (eval.py expects cwd/gt, cwd/pred)
     work_gt = work / "gt"

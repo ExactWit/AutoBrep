@@ -200,7 +200,11 @@ def _make_analytic_geom(face, *, tol: float):
     sph = _fit_sphere(pts)
     if sph is not None and sph[2] <= tol * 2:
         c, r, err = sph
-        ax3 = occ["gp_Ax3"](occ["gp_Pnt"](float(c[0]), float(c[1]), float(c[2])))
+        # gp_Ax3 requires (Pnt, Dir) or (Pnt, Dir, Dir) — not Pnt alone.
+        ax3 = occ["gp_Ax3"](
+            occ["gp_Pnt"](float(c[0]), float(c[1]), float(c[2])),
+            occ["gp_Dir"](0.0, 0.0, 1.0),
+        )
         candidates.append((err, occ["Geom_SphericalSurface"](ax3, float(r)), "sphere"))
 
     if not candidates:
@@ -239,7 +243,12 @@ def replace_analytic_surfaces(shape, *, tol: float = 1e-3) -> tuple[Any, dict[st
             stats["already_analytic"] += 1
             exp.Next()
             continue
-        geom = _make_analytic_geom(face, tol=tol)
+        try:
+            geom = _make_analytic_geom(face, tol=tol)
+        except Exception:  # noqa: BLE001
+            stats["failed"] += 1
+            exp.Next()
+            continue
         if geom is None:
             stats["kept_freeform"] += 1
             exp.Next()
