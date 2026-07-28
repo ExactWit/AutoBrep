@@ -132,6 +132,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--top-p", type=float, default=0.9)
     p.add_argument("--eval-py", default=str(DEFAULT_EVAL_PY))
     p.add_argument("--make-submission-zip", type=_parse_bool, default=False)
+    p.add_argument(
+        "--postprocess-analytic",
+        type=_parse_bool,
+        default=True,
+        help="Replace near-analytic BSpline faces before writing STEP (default on)",
+    )
+    p.add_argument("--analytic-tol", type=float, default=1e-3)
     return p.parse_args()
 
 
@@ -224,6 +231,8 @@ def main() -> int:
         gen_batch_size=max(1, int(args.gen_batch)),
         split=split,
         require_gt=not is_public,
+        postprocess_analytic=bool(args.postprocess_analytic),
+        analytic_tol=float(args.analytic_tol),
     )
     for i, status in enumerate(gen_log):
         if (i + 1) % 10 == 0 or not status.get("ok") or i == 0 or i + 1 == len(gen_log):
