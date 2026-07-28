@@ -72,10 +72,19 @@ CLI：`--official-val-samples-mid 24`、`--official-val-gen-batch 4`、`--offici
 |------|------|
 | `train_loss` / `val_loss` | AR token CE（parquet train / **官方 datasplit val**） |
 | `lr` | 学习率 |
+| `val/fast/ppl` | Level-1：序列困惑度（无需 OCC） |
+| `val/fast/token_acc` | Level-1：token Top-1 准确率 |
+| `val/fast/geom_acc` | Level-1：几何/FSQ 码段准确率 |
+| `val/fast/topo_acc` | Level-1：拓扑标记 token 准确率 |
+| `val/fast/complexity_acc` | Level-1：复杂度 token 准确率 |
+| `val/fast/topo_compliance` | Level-1：轻量拓扑合规率（规则校验，无 OCC） |
 | `val/official_gen_success` | 官方 val 上 STEP 生成成功率 |
-| `val/official_summary` | 挑战 `min_eval/eval.py` 综合分 |
+| `val/official_summary` | 挑战 `min_eval/eval.py` 综合分（含几何/拓扑 F1；非独立 CD 字段时以 summary 对齐赛题质量） |
 | `val/official_valid_ratio` | 合法 B-Rep 比例 |
 | `val/official_surface_f1` / `edge_f1` / `vertex_f1` / `topo_f1` | 几何 / 拓扑 F1 |
+
+Level-1 每个 val epoch 还会写入 `metrics/fast_val_epochXXX.json`。  
+Level-2/3（OCC STEP）仍由 `EccvOfficialValCallback`：mid 子集（默认 24，可配到 100–200）+ 末 epoch full。
 
 每次官方评测会在 `metrics/official_val_stepXXXXXX/` 写下 `gt/`、`pred/`、`metrics.json`。  
 CLI：`--official-val-samples 4`、`--official-val-every 1`、`--no-official-val`、`--eval-py ...`。

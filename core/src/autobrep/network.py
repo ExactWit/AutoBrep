@@ -1245,12 +1245,22 @@ class XTransformer(nn.Module):
             ignore_index=-1,
         )
 
-    def forward(self, x, cond_mask=None, attn_mask=None, prepend_embeds=None):
+    def forward(
+        self,
+        x,
+        cond_mask=None,
+        attn_mask=None,
+        prepend_embeds=None,
+        *,
+        return_logits: bool = False,
+    ):
         """forward pass
 
         Args:
             prepend_embeds: optional (B, M, dim) continuous prefix (e.g. point-cloud
                 soft tokens). AutoregressiveWrapper strips them from CE logits.
+            return_logits: if True, return ``(loss, logits, target, cond_mask_shifted)``
+                where logits/target are (B, T) aligned for next-token CE.
         """
         target = x[:, 1:]
 
@@ -1265,11 +1275,12 @@ class XTransformer(nn.Module):
             prepend_embeds=prepend_embeds,
         )
 
+        cond_mask_shifted = None
         if cond_mask is not None:
             # Ignore loss for user conditional tokens
-            cond_mask = cond_mask[:, :-1]
-            _logits_ = logits[~cond_mask]  # True = ignore
-            _target_ = target[~cond_mask]
+            cond_mask_shifted = cond_mask[:, :-1]
+            _logits_ = logits[~cond_mask_shifted]  # True = ignore
+            _target_ = target[~cond_mask_shifted]
         else:
             # Apply loss on all uncond tokens
             _logits_ = logits.reshape(-1, logits.size(-1))
@@ -1277,4 +1288,6 @@ class XTransformer(nn.Module):
 
         loss = F.cross_entropy(_logits_, _target_, ignore_index=-1)
 
+        if return_logits:
+            return loss, logits, target, cond_mask_shifted
         return loss

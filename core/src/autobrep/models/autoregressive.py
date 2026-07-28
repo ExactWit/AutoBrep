@@ -905,6 +905,8 @@ class AutoBrepViewModel(AutoBrepModel):
         self.trainable_params = [
             p for p in self.view_encoder.parameters() if p.requires_grad
         ]
+        # Level-1 fast metrics on validation (PPL / token acc / light topo).
+        self.enable_fast_metrics: bool = True
 
         n_train = sum(p.numel() for p in self.trainable_params)
         n_total = sum(p.numel() for p in self.parameters())
@@ -919,7 +921,21 @@ class AutoBrepViewModel(AutoBrepModel):
         return loss
 
     def validation_step(self, batch, batch_idx) -> STEP_OUTPUT:
-        loss = self.common_step(batch)
+        if self.enable_fast_metrics:
+            loss, fast = self.common_step(batch, return_fast_metrics=True)
+            if fast is not None:
+                for k, v in fast.log_dict("val/fast").items():
+                    if v == v:  # skip NaN
+                        self.log(k, v, on_epoch=True, sync_dist=True, reduce_fx="mean")
+                self.log(
+                    "val/fast/n_tokens",
+                    float(fast.n_tokens),
+                    on_epoch=True,
+                    sync_dist=True,
+                    reduce_fx="sum",
+                )
+        else:
+            loss = self.common_step(batch)
         self.log("val_loss", loss, prog_bar=True, on_epoch=True, sync_dist=True)
         return loss
 
@@ -1008,7 +1024,9 @@ class AutoBrepViewModel(AutoBrepModel):
             return int(ids[0].item())
         return [int(x) for x in ids.tolist()]
 
-    def common_step(self, batch):
+    def common_step(self, batch, *, return_fast_metrics: bool = False):
+        from autobrep.metrics.fast_metrics import compute_fast_metrics_from_logits
+
         token, face_ncs, edge_ncs = (
             batch["seq"],
             batch["face_ncs"].to(dtype=torch.bfloat16),
@@ -1043,6 +1061,24 @@ class AutoBrepViewModel(AutoBrepModel):
         prepend = self.encode_views(
             images, prim_types, prim_linetypes, prim_geom, prim_mask
         )
+        if return_fast_metrics:
+            loss, logits, target, cond_shifted = self.cad_gpt(
+                updated_token,
+                cond_mask=loss_mask,
+                attn_mask=None,
+                prepend_embeds=prepend,
+                return_logits=True,
+            )
+            fast = compute_fast_metrics_from_logits(
+                logits,
+                target,
+                ignore_index=-1,
+                cond_mask=cond_shifted,
+                full_sequences=updated_token,
+                max_face=int(getattr(self.hparams, "max_face", 200) or 200),
+            )
+            return loss, fast
+
         loss = self.cad_gpt(
             updated_token,
             cond_mask=loss_mask,

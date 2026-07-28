@@ -280,6 +280,7 @@ def main() -> int:
 
     from autobrep.data.eccv_data import ECCVViewDataModule
     from autobrep.inference.eccv_val_eval import EccvOfficialValCallback
+    from autobrep.metrics.fast_val_callback import FastValMetricsCallback
     from autobrep.models.autoregressive import AutoBrepViewModel
 
     datamodule = ECCVViewDataModule(**data_args)
@@ -392,6 +393,7 @@ def main() -> int:
         complexity=args.complexity,
         enabled=not args.no_official_val,
     )
+    fast_val_cb = FastValMetricsCallback(metrics_dir=metrics_dir, enabled=True)
 
     trainer_cfg = dict(cfg.get("trainer") or {})
     trainer_cfg.update(
@@ -406,6 +408,7 @@ def main() -> int:
                 ckpt_cb,
                 LearningRateMonitor(logging_interval="step"),
                 _CudaWatch(),
+                fast_val_cb,
                 official_val_cb,
             ],
         }
