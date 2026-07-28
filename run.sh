@@ -63,6 +63,18 @@ EVAL_GEN_BATCH="${EVAL_GEN_BATCH:-1}"
 MAKE_SUBMISSION_ZIP="${MAKE_SUBMISSION_ZIP:-0}"
 # ECCV view-cond default: epoch schedule on small set (override with --max-steps)
 ECCV_MAX_EPOCHS="${ECCV_MAX_EPOCHS:-50}"
+USE_PRIM_SEQ_ENCODER="${USE_PRIM_SEQ_ENCODER:-}"
+PRIM_D_MODEL="${PRIM_D_MODEL:-512}"
+PRIM_N_LAYERS="${PRIM_N_LAYERS:-4}"
+PRIM_MAX_SEQ="${PRIM_MAX_SEQ:-384}"
+USE_DECODER_CROSS_ATTN="${USE_DECODER_CROSS_ATTN:-}"
+DECODER_XATTN_HEADS="${DECODER_XATTN_HEADS:-8}"
+ENABLE_AUX_VIEW_BBOX="${ENABLE_AUX_VIEW_BBOX:-0}"
+AUX_VIEW_BBOX_WEIGHT="${AUX_VIEW_BBOX_WEIGHT:-0.1}"
+ENABLE_AUX_SURF_TYPE="${ENABLE_AUX_SURF_TYPE:-0}"
+AUX_SURF_TYPE_WEIGHT="${AUX_SURF_TYPE_WEIGHT:-0.1}"
+FSQ_UPGRADE="${FSQ_UPGRADE:-0}"
+POSTPROCESS_ANALYTIC="${POSTPROCESS_ANALYTIC:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -117,6 +129,18 @@ while [[ $# -gt 0 ]]; do
     --eval-py) EVAL_PY="$2"; shift 2 ;;
     --gen-batch|--eval-gen-batch) EVAL_GEN_BATCH="$2"; shift 2 ;;
     --make-submission-zip) MAKE_SUBMISSION_ZIP="$2"; shift 2 ;;
+    --use-prim-seq-encoder) USE_PRIM_SEQ_ENCODER="$2"; shift 2 ;;
+    --prim-d-model) PRIM_D_MODEL="$2"; shift 2 ;;
+    --prim-n-layers) PRIM_N_LAYERS="$2"; shift 2 ;;
+    --prim-max-seq) PRIM_MAX_SEQ="$2"; shift 2 ;;
+    --use-decoder-cross-attn) USE_DECODER_CROSS_ATTN="$2"; shift 2 ;;
+    --decoder-xattn-heads) DECODER_XATTN_HEADS="$2"; shift 2 ;;
+    --enable-aux-view-bbox) ENABLE_AUX_VIEW_BBOX="$2"; shift 2 ;;
+    --aux-view-bbox-weight) AUX_VIEW_BBOX_WEIGHT="$2"; shift 2 ;;
+    --enable-aux-surf-type) ENABLE_AUX_SURF_TYPE="$2"; shift 2 ;;
+    --aux-surf-type-weight) AUX_SURF_TYPE_WEIGHT="$2"; shift 2 ;;
+    --fsq-upgrade) FSQ_UPGRADE="$2"; shift 2 ;;
+    --postprocess-analytic) POSTPROCESS_ANALYTIC="$2"; shift 2 ;;
     --) shift; break ;;
     -*) echo "[run.sh] unknown option: $1" >&2; exit 1 ;;
     *) break ;;
@@ -179,7 +203,12 @@ case "${MODE}" in
       "official_val_every": 0,
       "official_val_epoch_frac": 0.25,
       "no_official_val": false,
-      "complexity": "from_condition"
+      "complexity": "from_condition",
+      "use_prim_seq_encoder": 0,
+      "use_decoder_cross_attn": 0,
+      "enable_aux_view_bbox": 0,
+      "enable_aux_surf_type": 0,
+      "fsq_upgrade": 0
     },
     "test": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
@@ -187,7 +216,8 @@ case "${MODE}" in
       "complexity": "from_condition",
       "temperature": 1.0,
       "top_p": 0.9,
-      "gen_batch": 1
+      "gen_batch": 1,
+      "postprocess_analytic": 1
     },
     "infer": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
@@ -247,7 +277,18 @@ case "${MODE}" in
       "--official-val-epoch-frac",
       "--no-official-val",
       "--eval-py",
-      "--complexity"
+      "--complexity",
+      "--use-prim-seq-encoder",
+      "--prim-d-model",
+      "--prim-n-layers",
+      "--prim-max-seq",
+      "--use-decoder-cross-attn",
+      "--decoder-xattn-heads",
+      "--enable-aux-view-bbox",
+      "--aux-view-bbox-weight",
+      "--enable-aux-surf-type",
+      "--aux-surf-type-weight",
+      "--fsq-upgrade"
     ],
     "test": [
       "--weight-folder",
@@ -259,7 +300,8 @@ case "${MODE}" in
       "--temperature",
       "--top-p",
       "--gen-batch",
-      "--eval-py"
+      "--eval-py",
+      "--postprocess-analytic"
     ],
     "infer": [
       "--weight-folder",
@@ -437,6 +479,25 @@ JSON
       fi
       if [[ "${NO_OFFICIAL_VAL}" == "1" || "${NO_OFFICIAL_VAL}" == "true" || "${NO_OFFICIAL_VAL}" == "True" ]]; then
         TRAIN_ARGS+=(--no-official-val)
+      fi
+      # P1/P2 flags: only forward when explicitly set (older tips lack these argparse opts).
+      if [[ -n "${USE_PRIM_SEQ_ENCODER}" ]]; then
+        TRAIN_ARGS+=(--use-prim-seq-encoder "${USE_PRIM_SEQ_ENCODER}")
+      fi
+      if [[ -n "${PRIM_D_MODEL}" && -n "${USE_PRIM_SEQ_ENCODER}" ]]; then
+        TRAIN_ARGS+=(--prim-d-model "${PRIM_D_MODEL}" --prim-n-layers "${PRIM_N_LAYERS}" --prim-max-seq "${PRIM_MAX_SEQ}")
+      fi
+      if [[ -n "${USE_DECODER_CROSS_ATTN}" ]]; then
+        TRAIN_ARGS+=(--use-decoder-cross-attn "${USE_DECODER_CROSS_ATTN}" --decoder-xattn-heads "${DECODER_XATTN_HEADS}")
+      fi
+      if [[ "${ENABLE_AUX_VIEW_BBOX}" == "1" ]]; then
+        TRAIN_ARGS+=(--enable-aux-view-bbox 1 --aux-view-bbox-weight "${AUX_VIEW_BBOX_WEIGHT}")
+      fi
+      if [[ "${ENABLE_AUX_SURF_TYPE}" == "1" ]]; then
+        TRAIN_ARGS+=(--enable-aux-surf-type 1 --aux-surf-type-weight "${AUX_SURF_TYPE_WEIGHT}")
+      fi
+      if [[ "${FSQ_UPGRADE}" == "1" ]]; then
+        TRAIN_ARGS+=(--fsq-upgrade 1)
       fi
       echo "[run.sh] train eccv data=${DATA_ROOT} weight=${WEIGHT_FOLDER} → ${EXP_DIR_ARG}" >&2
       exec python -u "${REPO_DIR}/scripts/train_eccv_pipeline.py" "${TRAIN_ARGS[@]}"
