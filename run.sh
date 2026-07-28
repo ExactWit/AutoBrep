@@ -623,6 +623,7 @@ JSON
       --top-p "${TOP_P}"
       --gen-batch "${EVAL_GEN_BATCH}"
       --eval-py "${EVAL_PY}"
+      --postprocess-analytic "${POSTPROCESS_ANALYTIC}"
     )
     if [[ -n "${DATASPLIT_ARG}" ]]; then
       EVAL_ARGS+=(--datasplit "${DATASPLIT_ARG}")
