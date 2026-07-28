@@ -63,6 +63,7 @@ def build_sample_config(args: argparse.Namespace) -> DotDict:
                 "vertex_threshold": float(args.vertex_threshold),
                 "sewing_tolerance": float(args.sewing_tolerance),
                 "z_threshold": float(args.z_threshold),
+                "postprocess_analytic": bool(getattr(args, "postprocess_analytic", True)),
             },
             "weight_folder": str(args.weight_folder),
         }
@@ -208,6 +209,22 @@ def sample_batch(
                     )
                     continue
 
+                if bool(getattr(config.hyper_parameters, "postprocess_analytic", True)):
+                    try:
+                        from autobrep.inference.step_postprocess import postprocess_shape
+
+                        result, _ = postprocess_shape(
+                            result,
+                            analytic=True,
+                            sew_tolerance=max(
+                                float(config.hyper_parameters.sewing_tolerance), 0.005
+                            ),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.setdefault("postprocess_errors", []).append(
+                            {"sample": sample_stem, "error": str(exc)}
+                        )
+
                 step_path = infer_dir / f"{sample_stem}.step"
                 save_step_func([result], step_path)
                 if predictions_dir is not None and fixed_stem and sample_idx == 0:
@@ -328,6 +345,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vertex-threshold", type=float, default=0.002)
     p.add_argument("--sewing-tolerance", type=float, default=0.002)
     p.add_argument("--z-threshold", type=float, default=0.0)
+    p.add_argument(
+        "--postprocess-analytic",
+        type=int,
+        default=1,
+        help="Replace near-analytic BSpline faces + ShapeFix before STEP write (1=on)",
+    )
     p.add_argument("--seed", type=int, default=689447)
     p.add_argument("--use-seed", type=_parse_bool, default=False)
     p.add_argument("--debug", type=_parse_bool, default=True)

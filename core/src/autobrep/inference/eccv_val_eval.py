@@ -189,6 +189,8 @@ def _tokens_to_step(
     vertex_threshold: float,
     sewing_tolerance: float,
     z_threshold: float,
+    postprocess_analytic: bool = True,
+    analytic_tol: float = 1e-3,
 ) -> dict[str, Any]:
     class _DecodeShim:
         pass
@@ -230,6 +232,19 @@ def _tokens_to_step(
             "complexity_id": complexity_id,
             **meta,
         }
+    if postprocess_analytic:
+        try:
+            from autobrep.inference.step_postprocess import postprocess_shape
+
+            compound, _pp = postprocess_shape(
+                compound,
+                analytic=True,
+                analytic_tol=analytic_tol,
+                sew_tolerance=max(float(sewing_tolerance), 0.005),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Keep original compound if postprocess fails
+            _pp = {"ok": False, "error": str(exc)}
     out_step.parent.mkdir(parents=True, exist_ok=True)
     save_step_func([compound], out_step)
     return {
@@ -261,6 +276,8 @@ def generate_pred_steps_batched(
     z_threshold: float = 0.0,
     split: str = "val",
     require_gt: bool = True,
+    postprocess_analytic: bool = True,
+    analytic_tol: float = 1e-3,
 ) -> list[dict[str, Any]]:
     """
     Batched AR generate (uses more VRAM), then serial decode/rebuild per sample.
@@ -358,6 +375,8 @@ def generate_pred_steps_batched(
                             vertex_threshold=vertex_threshold,
                             sewing_tolerance=sewing_tolerance,
                             z_threshold=z_threshold,
+                            postprocess_analytic=postprocess_analytic,
+                            analytic_tol=analytic_tol,
                         )
                     except Exception as exc:  # noqa: BLE001
                         status = {
@@ -420,6 +439,8 @@ def generate_pred_step(
     vertex_threshold: float = 0.002,
     sewing_tolerance: float = 0.002,
     z_threshold: float = 0.0,
+    postprocess_analytic: bool = True,
+    analytic_tol: float = 1e-3,
 ) -> dict[str, Any]:
     """Generate one STEP (thin wrapper over batched path)."""
     logs = generate_pred_steps_batched(
@@ -437,6 +458,8 @@ def generate_pred_step(
         vertex_threshold=vertex_threshold,
         sewing_tolerance=sewing_tolerance,
         z_threshold=z_threshold,
+        postprocess_analytic=postprocess_analytic,
+        analytic_tol=analytic_tol,
     )
     status = logs[0] if logs else {"sample_id": sample_id, "ok": False, "error": "empty"}
     # ensure out path name if ok
@@ -555,6 +578,8 @@ class EccvOfficialValCallback(Callback):
         temperature: float = 1.0,
         top_p: float = 0.9,
         enabled: bool = True,
+        postprocess_analytic: bool = True,
+        analytic_tol: float = 1e-3,
     ):
         super().__init__()
         self.dataset_root = Path(dataset_root)
@@ -574,6 +599,8 @@ class EccvOfficialValCallback(Callback):
         self.temperature = temperature
         self.top_p = top_p
         self.enabled = enabled
+        self.postprocess_analytic = bool(postprocess_analytic)
+        self.analytic_tol = float(analytic_tol)
         self._sample_ids = list(sample_ids) if sample_ids else None
         self._mid_ids: Optional[list[str]] = None
         self._val_check_count = 0
@@ -736,6 +763,8 @@ class EccvOfficialValCallback(Callback):
                 temperature=self.temperature,
                 top_p=self.top_p,
                 gen_batch_size=self.gen_batch_size,
+                postprocess_analytic=self.postprocess_analytic,
+                analytic_tol=self.analytic_tol,
             )
             for i, status in enumerate(gen_log):
                 if (i + 1) % 10 == 0 or not status.get("ok") or i == 0:
