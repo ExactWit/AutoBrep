@@ -422,7 +422,18 @@ def main() -> int:
     else:
         trainer_cfg["max_epochs"] = -1
         trainer_cfg["max_steps"] = max_steps
-        trainer_cfg["val_check_interval"] = int(args.val_check_interval)
+        # Short smoke (max_steps << default val_check_interval) must still run val
+        # so FastValMetricsCallback fires and ModelCheckpoint can see val_loss.
+        vci = int(args.val_check_interval)
+        if max_steps > 0 and vci > max_steps:
+            vci = max(1, int(max_steps))
+            print(
+                f"[train_eccv] clamp val_check_interval "
+                f"{args.val_check_interval} → {vci} (max_steps={max_steps})",
+                file=sys.stderr,
+                flush=True,
+            )
+        trainer_cfg["val_check_interval"] = vci
         trainer_cfg.pop("check_val_every_n_epoch", None)
     for k in ("profiler",):
         trainer_cfg.pop(k, None)
@@ -462,12 +473,24 @@ def main() -> int:
     )
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
 
+    # Launcher treats missing checkpoints/last.ckpt as incomplete/failed.
+    # With max_steps short runs, ModelCheckpoint may never fire (no val_loss /
+    # mid-epoch stop). Always materialize last.ckpt after a successful fit.
+    last_ckpt = ckpt_dir / "last.ckpt"
+    if not last_ckpt.is_file():
+        trainer.save_checkpoint(str(last_ckpt))
+        print(
+            f"[train_eccv] wrote missing last.ckpt after fit → {last_ckpt}",
+            file=sys.stderr,
+            flush=True,
+        )
+
     summary = {
-        "best_model_path": getattr(ckpt_cb, "best_model_path", ""),
+        "best_model_path": getattr(ckpt_cb, "best_model_path", "") or "",
         "best_model_score": float(ckpt_cb.best_model_score)
         if ckpt_cb.best_model_score is not None
         else None,
-        "last_model_path": str(ckpt_dir / "last.ckpt"),
+        "last_model_path": str(last_ckpt) if last_ckpt.is_file() else "",
         "peak_cuda_GB": round(torch.cuda.max_memory_allocated() / 1e9, 3),
         "max_steps": max_steps,
         "max_epochs": max_epochs,

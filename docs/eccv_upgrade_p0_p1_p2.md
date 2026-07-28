@@ -41,10 +41,14 @@ eccv-3view-geom (baseline @ 0b2c8b9)
 | 3view train parent | `260723-162838` | `eccv-3view-geom-resume__train` |
 | 3view GT test（旧） | `260725-002218` | gen≈35.3%, summary≈0.046；P0 对照基线 |
 | P0 note 模板 | — | `P0 postprocess+split; parent=260723-162838; compare vs 260725-002218 GT test` |
+| 门禁队列 | `workflows/eccv_challenge_gated.yaml` | 仅 R_smoke；R0/R1 见 `docs/eccv_stage_reports/` |
 
-离线后处理（不重训）：
+离线后处理 A/B（R0，不重训）：
 
 ```bash
+conda activate autobrep
+PYTHONPATH=core/src python scripts/eccv_stage_r0_postprocess_ab.py
+# 或底层批处理：
 PYTHONPATH=core/src python scripts/postprocess_step_batch.py \
   --pred-dir <旧 pred STEP 目录> --out-dir <对比输出> --analytic 1
 ```

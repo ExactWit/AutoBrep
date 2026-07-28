@@ -1,0 +1,36 @@
+# ECCV 挑战赛门禁队列（硬停：不含 P0-50ep / P1 全量）
+#
+# 阶段约定：
+#   R_smoke →（本 workflow 仅此一步）→ 人工看 R0/R1 报告后再 enqueue 后续
+#   R0 = scripts/eccv_stage_r0_postprocess_ab.py（零训练，CPU/OCC，不走本 yaml）
+#   R1 = 现有 3view ckpt GT test + analytic（单独 start，见 docs/eccv_stage_reports/）
+#
+# 对照基线：parent train 260723-162838；GT test 260725-002218（summary≈0.046）
+name: eccv-challenge-gated
+gpu: "0"
+steps:
+  - label: R-smoke-pathway
+    mode: train
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p0
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: R-smoke-pathway
+    note: |
+      【R_smoke / 通路门禁 / 非正式训练】
+      目的：验证 P0 tip 能完成环境加载 → train step →（短）val/fast_*；并写出 checkpoints/last.ckpt，避免 launcher 误判 incomplete。
+      配置：max_epochs=0, max_steps=40, val_check_interval=20, limit_val_batches=4, no_official_val=1。
+      成功标准：status=finished + last.ckpt 存在 + train_summary.global_step≥40。
+      本 Job 不产出可评测模型。通过后跑 R0 脚本（后处理 A/B），再人工确认后 enqueue R1。
+      对照文档基线：260725-002218。
+    enqueue: true
+    train_config:
+      batch_size: 2
+      max_epochs: 0
+      max_steps: 40
+      val_check_interval: 20
+      accumulate_grad_batches: 2
+      lr: 0.0001
+      limit_val_batches: 4
+      no_official_val: true
+      complexity: from_condition

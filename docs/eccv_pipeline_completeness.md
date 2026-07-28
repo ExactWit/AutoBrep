@@ -72,13 +72,20 @@
 
 ---
 
-## 缺口与补齐优先级
+## 缺口与补齐优先级（挑战赛门禁）
 
-1. **P0 合入**（`eccv-p0` / entry `eccv-3view-p0`）：fast metrics ✅ · hist-split+groups ✅ · analytic postprocess ✅ — 见 `docs/eccv_upgrade_p0_p1_p2.md`。
-2. **等 3view public 跑完** → 两模型 public 才对称（当前 run：`260727-172702`）。
-3. **P0 评测门禁**：短训 smoke（metrics）→ 可选 resume；official test vs `260725-002218`；旧 pred 可只跑 `scripts/postprocess_step_batch.py` A/B。
-4. **P1-A / P1-B**：图元 Encoder prefix → decoder xattn（见 upgrade 文档）。
-5. **pc-cond**：仅当需要第三条件分支时再在 ECCV 数据上立项。
+详见 [`docs/eccv_stage_reports/README.md`](eccv_stage_reports/README.md)；workflow：`workflows/eccv_challenge_gated.yaml`。
+
+1. **R_smoke**：通路冒烟（40 step，非正式训）— `eccv-challenge-gated`。
+2. **R0**：旧 GT test pred（`260725-002218`）analytic 后处理 A/B — `scripts/eccv_stage_r0_postprocess_ab.py`（零训练）。
+3. **R1**：现有 3view ckpt（`260723-162838`）+ `postprocess_analytic=1` 官方 GT test；**硬停**写报告。
+4. **R2（按需）**：仅当门禁确认 hist-split 值得重训时，再开 P0 50ep + GT test。
+5. **曲面类型进模型**：相对事后拟合更对症；优先于盲跑 P1 全量。
+6. **P1-A / P1-B**：门禁通过且条件编码仍是瓶颈时再 enqueue（不自动连跑）。
+7. **3view public**：交 submission 单独盯 `260727-172702`，与抬分门禁解耦。
+8. **pc-cond**：仅当需要第三条件分支时再在 ECCV 数据上立项。
+
+代码合入状态：P0 tip（`eccv-3view-p0`）fast metrics ✅ · hist-split+groups ✅ · analytic postprocess ✅ — 见 `docs/eccv_upgrade_p0_p1_p2.md`。
 
 ---
 

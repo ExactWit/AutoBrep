@@ -506,6 +506,7 @@ def run_official_eval(
     metrics: dict[str, Any] = {"eval_returncode": float(proc.returncode)}
     patterns = {
         "valid_ratio": r"Valid Ratio:\s*([0-9.]+)",
+        "invalid_ratio": r"Invalid Ratio:\s*([0-9.]+)",
         "surface_f1": r"Surface F1:\s*([0-9.]+)",
         "edge_f1": r"Edge F1:\s*([0-9.]+)",
         "vertex_f1": r"Vertex F1:\s*([0-9.]+)",
@@ -518,6 +519,16 @@ def run_official_eval(
         m = re.search(pat, out)
         if m:
             metrics[key] = float(m.group(1))
+    # Chamfer Distance is printed once per Surface/Edge/Vertex block (median).
+    cds = re.findall(r"Chamfer Distance:\s*([0-9.eE+-]+)", out)
+    if len(cds) >= 1:
+        metrics["cd_surface"] = float(cds[0])
+    if len(cds) >= 2:
+        metrics["cd_edge"] = float(cds[1])
+    if len(cds) >= 3:
+        metrics["cd_vertex"] = float(cds[2])
+    if "invalid_ratio" not in metrics and "valid_ratio" in metrics:
+        metrics["invalid_ratio"] = 1.0 - float(metrics["valid_ratio"])
     metrics["_raw_log_tail"] = out[-4000:]
     if "summary" not in metrics and proc.returncode != 0:
         metrics["summary"] = 0.0
