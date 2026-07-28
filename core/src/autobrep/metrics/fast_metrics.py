@@ -174,7 +174,7 @@ def compute_fast_metrics_from_logits(
         # cond_mask True = ignore
         if cond_mask.shape != targets.shape:
             raise ValueError("cond_mask shape must match targets")
-        valid = valid & (~cond_mask)
+        valid = valid & (~cond_mask.to(device=valid.device, dtype=torch.bool))
 
     flat_pred = pred[valid]
     flat_tgt = targets[valid]
