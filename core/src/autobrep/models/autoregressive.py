@@ -862,6 +862,10 @@ class AutoBrepViewModel(AutoBrepModel):
         view_dropout: float = 0.1,
         view_dropout_max: int = 2,
         num_views: int = 3,
+        use_prim_seq_encoder: bool = False,
+        prim_d_model: int = 512,
+        prim_n_layers: int = 4,
+        prim_max_seq: int = 384,
     ) -> None:
         super().__init__(
             surf_fsq_ckpt=surf_fsq_ckpt,
@@ -890,6 +894,10 @@ class AutoBrepViewModel(AutoBrepModel):
             dropout=view_dropout,
             view_dropout_max=view_dropout_max,
             pretrained_backbone=True,
+            use_prim_seq_encoder=use_prim_seq_encoder,
+            prim_d_model=prim_d_model,
+            prim_n_layers=prim_n_layers,
+            prim_max_seq=prim_max_seq,
         )
 
         if ar_ckpt and not inference_mode:
@@ -963,6 +971,7 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes: torch.Tensor,
         prim_geom: torch.Tensor,
         prim_mask: torch.Tensor,
+        prim_group_roles: torch.Tensor | None = None,
     ) -> torch.Tensor:
         param_dtype = next(self.view_encoder.parameters()).dtype
         if images.dtype != param_dtype:
@@ -970,7 +979,12 @@ class AutoBrepViewModel(AutoBrepModel):
         if prim_geom.dtype != param_dtype and prim_geom.is_floating_point():
             prim_geom = prim_geom.to(dtype=param_dtype)
         return self.view_encoder(
-            images, prim_types, prim_linetypes, prim_geom, prim_mask
+            images,
+            prim_types,
+            prim_linetypes,
+            prim_geom,
+            prim_mask,
+            prim_group_roles=prim_group_roles,
         )
 
     @torch.inference_mode()
@@ -1037,6 +1051,7 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes = batch["prim_linetypes"]
         prim_geom = batch["prim_geom"].to(dtype=torch.bfloat16)
         prim_mask = batch["prim_mask"]
+        prim_group_roles = batch.get("prim_group_roles")
 
         with torch.no_grad():
             surf_id, edge_id = self.encode_fsq_code(face_ncs, edge_ncs)
@@ -1059,7 +1074,12 @@ class AutoBrepViewModel(AutoBrepModel):
         loss_mask = torch.stack(loss_mask).detach()
 
         prepend = self.encode_views(
-            images, prim_types, prim_linetypes, prim_geom, prim_mask
+            images,
+            prim_types,
+            prim_linetypes,
+            prim_geom,
+            prim_mask,
+            prim_group_roles=prim_group_roles,
         )
         if return_fast_metrics:
             loss, logits, target, cond_shifted = self.cad_gpt(
@@ -1098,11 +1118,17 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes=None,
         prim_geom=None,
         prim_mask=None,
+        prim_group_roles=None,
     ):
         prepend = None
         if images is not None:
             prepend = self.encode_views(
-                images, prim_types, prim_linetypes, prim_geom, prim_mask
+                images,
+                prim_types,
+                prim_linetypes,
+                prim_geom,
+                prim_mask,
+                prim_group_roles=prim_group_roles,
             )
         # Prepend condition only on first decode step so KV cache stays valid.
         return generate_with_prepend_kv_cache(

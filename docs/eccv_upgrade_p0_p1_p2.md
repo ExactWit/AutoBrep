@@ -19,8 +19,10 @@ eccv-3view-geom (baseline @ 0b2c8b9)
 |----------|---------|----------|
 | `eccv-3view-geom` | `eccv-3view-geom` | 3view + KV fix |
 | `eccv-3view-p0` | `autobrep-eccv-p0` / `eccv-p0` | fast metrics + hist-split/groups + analytic STEP postprocess |
-| `eccv-3view-p1a` | `feat/p1-prim-encoder-prefix` | 图元 Transformer Encoder → soft prefix（冻 AR） |
+| `eccv-3view-p1a` | `feat/p1-prim-encoder-prefix` | 图元 Transformer Encoder→M=64 soft prefix（冻 AR）；CLI `--use-prim-seq-encoder 1` |
 | `eccv-3view-p1b` | `feat/p1-decoder-cross-attn` | AR 每层 cross-attn（冻 AR 原权重） |
+
+P1-A note 模板：`P1a prim-encoder prefix; parent=260723-162838; compare vs p0 / 260725-002218`
 
 ## 开关
 
