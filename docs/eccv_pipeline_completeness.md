@@ -75,10 +75,11 @@
 ## 缺口与补齐优先级
 
 1. **P0 合入**（`eccv-p0` / entry `eccv-3view-p0`）：fast metrics ✅ · hist-split+groups ✅ · analytic postprocess ✅ — 见 `docs/eccv_upgrade_p0_p1_p2.md`。
-2. **等 3view public 跑完** → 两模型 public 才对称（当前 run：`260727-172702`）。
-3. **P0 评测门禁**：短训 smoke（metrics）→ 可选 resume；official test vs `260725-002218`；旧 pred 可只跑 `scripts/postprocess_step_batch.py` A/B。
-4. **P1-A / P1-B**：图元 Encoder prefix → decoder xattn（见 upgrade 文档）。
-5. **pc-cond**：仅当需要第三条件分支时再在 ECCV 数据上立项。
+2. **P1-A / P1-B**（`feat/p1-*` / `eccv-p1`）：prim encoder soft prefix ✅ · decoder xattn ✅。
+3. **P2**（`eccv-p2`）：aux view-bbox / surf-type 开关 ✅ · `--fsq-upgrade` 冲榜标记 ✅。
+4. **等 3view public 跑完** → 两模型 public 才对称（当前 run：`260727-172702`）。
+5. **P0/P1 评测门禁**：短训 smoke → official test vs `260725-002218`；旧 pred 可只跑 `scripts/postprocess_step_batch.py` A/B。
+6. **pc-cond**：仅当需要第三条件分支时再在 ECCV 数据上立项。
 
 ---
 

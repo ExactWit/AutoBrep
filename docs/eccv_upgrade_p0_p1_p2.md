@@ -54,6 +54,13 @@ PYTHONPATH=core/src python scripts/postprocess_step_batch.py \
   --pred-dir <旧 pred STEP 目录> --out-dir <对比输出> --analytic 1
 ```
 
-## 自由曲面光顺
+## P2 开关
 
-OCC fairing API 环境差异大：当前 **skip**，仅做解析替换 + `ShapeFix_Shape` + sewing（默认 tol 略放宽至 ≥0.005）。
+| 开关 | 默认 | 说明 |
+|------|------|------|
+| `--enable-aux-view-bbox 1` | 0 | 三视图 AABB 投影一致性（front.w≈top.w, front.h≈side.h） |
+| `--aux-view-bbox-weight` | 0.1 | 上述辅助损失权重 |
+| `--enable-aux-surf-type 1` | 0 | 曲面类型 CE；需 batch 提供 `surf_type_ids`（GT 可得时再开） |
+| `--fsq-upgrade 1` | 0 | 冲榜标记：需自行换成更高精度 FSQ ckpt（与 codebook 对齐）；不改默认 1024 码本加载逻辑 |
+
+P2 note 模板：`P2 aux-bbox; parent=<p1 tip>; compare vs p1b / 260725-002218`

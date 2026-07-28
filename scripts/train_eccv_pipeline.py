@@ -47,6 +47,26 @@ def parse_args() -> argparse.Namespace:
         help="P1-B: inject per-layer AR cross-attn (implies prim encoder)",
     )
     p.add_argument("--decoder-xattn-heads", type=int, default=8)
+    p.add_argument(
+        "--enable-aux-view-bbox",
+        type=int,
+        default=0,
+        help="P2: view AABB projection consistency aux loss",
+    )
+    p.add_argument("--aux-view-bbox-weight", type=float, default=0.1)
+    p.add_argument(
+        "--enable-aux-surf-type",
+        type=int,
+        default=0,
+        help="P2: surface-type CE when batch provides surf_type_ids",
+    )
+    p.add_argument("--aux-surf-type-weight", type=float, default=0.1)
+    p.add_argument(
+        "--fsq-upgrade",
+        type=int,
+        default=0,
+        help="P2: mark higher-precision FSQ run (swap matching FSQ ckpts in weight_folder)",
+    )
     p.add_argument("--accumulate-grad-batches", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
@@ -246,6 +266,10 @@ def main() -> int:
         "prim_n_layers": args.prim_n_layers,
         "prim_max_seq": args.prim_max_seq,
         "use_decoder_cross_attn": bool(getattr(args, "use_decoder_cross_attn", 0)),
+        "enable_aux_view_bbox": bool(getattr(args, "enable_aux_view_bbox", 0)),
+        "aux_view_bbox_weight": float(getattr(args, "aux_view_bbox_weight", 0.1)),
+        "enable_aux_surf_type": bool(getattr(args, "enable_aux_surf_type", 0)),
+        "fsq_upgrade": bool(getattr(args, "fsq_upgrade", 0)),
         "freeze_backbone": True,
         "load_point_cloud": False,
         "loss": "AR token CE (prepend excluded)",
@@ -300,6 +324,11 @@ def main() -> int:
     model_args["prim_max_seq"] = int(args.prim_max_seq)
     model_args["use_decoder_cross_attn"] = bool(args.use_decoder_cross_attn)
     model_args["decoder_xattn_heads"] = int(args.decoder_xattn_heads)
+    model_args["enable_aux_view_bbox"] = bool(args.enable_aux_view_bbox)
+    model_args["aux_view_bbox_weight"] = float(args.aux_view_bbox_weight)
+    model_args["enable_aux_surf_type"] = bool(args.enable_aux_surf_type)
+    model_args["aux_surf_type_weight"] = float(args.aux_surf_type_weight)
+    model_args["fsq_upgrade"] = bool(args.fsq_upgrade)
     model_args["surf_fsq_ckpt"] = str(weight / "surf-fsq.ckpt")
     model_args["edge_fsq_ckpt"] = str(weight / "edge-fsq.ckpt")
     model_args["ar_ckpt"] = str(weight / "ar.ckpt")

@@ -868,6 +868,12 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_max_seq: int = 384,
         use_decoder_cross_attn: bool = False,
         decoder_xattn_heads: int = 8,
+        # P2 aux / FSQ switches
+        enable_aux_view_bbox: bool = False,
+        aux_view_bbox_weight: float = 0.1,
+        enable_aux_surf_type: bool = False,
+        aux_surf_type_weight: float = 0.1,
+        fsq_upgrade: bool = False,
     ) -> None:
         super().__init__(
             surf_fsq_ckpt=surf_fsq_ckpt,
@@ -944,6 +950,18 @@ class AutoBrepViewModel(AutoBrepModel):
         self.trainable_params = trainable
         # Level-1 fast metrics on validation (PPL / token acc / light topo).
         self.enable_fast_metrics: bool = True
+        self.enable_aux_view_bbox = bool(enable_aux_view_bbox)
+        self.aux_view_bbox_weight = float(aux_view_bbox_weight)
+        self.enable_aux_surf_type = bool(enable_aux_surf_type)
+        self.aux_surf_type_weight = float(aux_surf_type_weight)
+        self.fsq_upgrade = bool(fsq_upgrade)
+        if self.fsq_upgrade:
+            print(
+                "[AutoBrepViewModel] fsq_upgrade=1: use higher-precision FSQ ckpts "
+                "(surf/edge codebook must match weight_folder); default pretrained "
+                "1024-code FSQ is unchanged unless you swap ckpts.",
+                flush=True,
+            )
 
         n_train = sum(p.numel() for p in self.trainable_params)
         n_total = sum(p.numel() for p in self.parameters())
@@ -1140,6 +1158,7 @@ class AutoBrepViewModel(AutoBrepModel):
                 full_sequences=updated_token,
                 max_face=int(getattr(self.hparams, "max_face", 200) or 200),
             )
+            loss = self._maybe_add_aux_loss(loss, batch, prim_geom, prim_mask)
             return loss, fast
 
         loss = self.cad_gpt(
@@ -1148,7 +1167,30 @@ class AutoBrepViewModel(AutoBrepModel):
             attn_mask=None,
             prepend_embeds=prepend,
         )
+        loss = self._maybe_add_aux_loss(loss, batch, prim_geom, prim_mask)
         return loss
+
+    def _maybe_add_aux_loss(self, loss, batch, prim_geom, prim_mask):
+        if not (self.enable_aux_view_bbox or self.enable_aux_surf_type):
+            return loss
+        from autobrep.models.aux_losses import compute_aux_losses
+
+        surf_logits = batch.get("surf_type_logits")
+        surf_targets = batch.get("surf_type_ids")
+        aux = compute_aux_losses(
+            prim_geom=prim_geom,
+            prim_mask=prim_mask,
+            enable_view_bbox=self.enable_aux_view_bbox,
+            view_bbox_weight=self.aux_view_bbox_weight,
+            surf_logits=surf_logits,
+            surf_targets=surf_targets,
+            enable_surf_type=self.enable_aux_surf_type and surf_targets is not None,
+            surf_type_weight=self.aux_surf_type_weight,
+        )
+        if self.training:
+            for k, v in aux.log_dict("train/aux").items():
+                self.log(k, v, on_step=True, on_epoch=True)
+        return loss + aux.total
 
     @torch.inference_mode()
     def generate(
