@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lightning import Callback, LightningModule, Trainer
+from pytorch_lightning import Callback, LightningModule, Trainer
 
 
 class FastValMetricsCallback(Callback):
