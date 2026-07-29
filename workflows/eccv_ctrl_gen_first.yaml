@@ -1,0 +1,78 @@
+# 可控对照队列（接在当前 P1-A 之后，GPU0）
+# 铁律：每次只改一个变量；推理一律用明确 host（best 或 last），禁止混用。
+#
+# best 定义：训练 ModelCheckpoint(monitor=val_loss, mode=min) 的最优权重。
+# gen 优先：先看 gen_success，再看 summary。
+name: eccv-ctrl-gen-first
+gpu: "0"
+steps:
+  # A: best + 无后处理  → 与 R1(best+post) 对照，隔离 postprocess
+  - label: ctrl-best-nopost-gt
+    mode: test
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p0
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: ctrl-best-nopost-gt
+    run_id: "/data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/stage_gates/ctrl_host_best__train"
+    note: |
+      【可控 A】唯一变量=关闭 analytic postprocess。
+      固定：tip=eccv-3view-p0，ckpt=3view BEST(val_loss@22920)，T=1.0,top_p=0.9,gen_batch=1,split=test。
+      对照：R1(25616aec)=best+post → 本 Job=best+nopost。
+      看：gen_success 与 summary 相对 R1 / 旧基线(last 无控) 的变化。
+      目标序：gen_success 优先。
+    enqueue: true
+    train_config:
+      gen_batch: 1
+      complexity: from_condition
+      postprocess_analytic: 0
+      temperature: 1.0
+      top_p: 0.9
+
+  # B: last + 有后处理 → 与 R1(best+post) 对照，隔离 ckpt
+  - label: ctrl-last-post-gt
+    mode: test
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p0
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: ctrl-last-post-gt
+    run_id: "/data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/stage_gates/ctrl_host_last__train"
+    note: |
+      【可控 B】唯一变量=ckpt 用 LAST（host 无 best.ckpt，launcher 回退 last）。
+      固定：tip=p0，postprocess=1，T=1.0,top_p=0.9,gen_batch=1。
+      对照：R1=best+post → 本 Job=last+post。
+      用于解释「R1 gen↑」有多少来自 best vs last，而非后处理。
+    enqueue: true
+    train_config:
+      gen_batch: 1
+      complexity: from_condition
+      postprocess_analytic: 1
+      temperature: 1.0
+      top_p: 0.9
+
+  # C: best + post + 低温 → gen-first 采样假设
+  - label: ctrl-best-post-T07-gt
+    mode: test
+    repo_name: AutoBrep
+    entry_id: eccv-3view-p0
+    dataset_id: eccv2026ws-cad-data
+    task: gen
+    tag: ctrl-best-post-T07-gt
+    run_id: "/data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/stage_gates/ctrl_host_best__train"
+    note: |
+      【可控 C / gen-first】唯一变量=temperature 1.0→0.7。
+      固定：best ckpt + postprocess=1 + tip=p0 + top_p=0.9。
+      假设：降低采样熵 → 减少 decode_failed / rebuild_failed → gen_success↑。
+      主看 gen_success；summary 为次。
+      失败归因基线见 stage_gates/R1_gen_fail_taxonomy.md（rebuild≈76%, decode≈24%）。
+    enqueue: true
+    train_config:
+      gen_batch: 1
+      complexity: from_condition
+      postprocess_analytic: 1
+      temperature: 0.7
+      top_p: 0.9
+
+  # D: P1-A GT test（等 P1a train 结束后再 enqueue 时用 run_id；此处先占位由后续 tick/手工接）
+  # 不放在本 workflow：P1a 仍在跑 full val；完成后单独 start，强制 best.ckpt。

@@ -485,11 +485,31 @@ def main() -> int:
             flush=True,
         )
 
+    # Stable name for inference: launcher / test prefer checkpoints/best.ckpt.
+    # ModelCheckpoint saves the monitored winner under a step/val_loss filename.
+    best_src = str(getattr(ckpt_cb, "best_model_path", "") or "").strip()
+    best_link = ckpt_dir / "best.ckpt"
+    if best_src and Path(best_src).is_file():
+        if best_link.exists() or best_link.is_symlink():
+            best_link.unlink()
+        try:
+            best_link.symlink_to(Path(best_src).resolve())
+        except OSError:
+            import shutil
+
+            shutil.copy2(best_src, best_link)
+        print(
+            f"[train_eccv] best.ckpt → {best_src} (monitor=val_loss, mode=min)",
+            file=sys.stderr,
+            flush=True,
+        )
+
     summary = {
-        "best_model_path": getattr(ckpt_cb, "best_model_path", "") or "",
+        "best_model_path": best_src or getattr(ckpt_cb, "best_model_path", "") or "",
         "best_model_score": float(ckpt_cb.best_model_score)
         if ckpt_cb.best_model_score is not None
         else None,
+        "best_ckpt_alias": str(best_link) if best_link.exists() else "",
         "last_model_path": str(last_ckpt) if last_ckpt.is_file() else "",
         "peak_cuda_GB": round(torch.cuda.max_memory_allocated() / 1e9, 3),
         "max_steps": max_steps,
@@ -497,6 +517,8 @@ def main() -> int:
         "schedule": schedule,
         "global_step": int(trainer.global_step),
         "current_epoch": int(trainer.current_epoch),
+        "ckpt_monitor": "val_loss",
+        "ckpt_monitor_mode": "min",
     }
     (metrics_dir / "train_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
