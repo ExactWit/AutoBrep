@@ -26,6 +26,7 @@
 | [eccv_sft.md](./eccv_sft.md) | ECCV SFT 说明 | ECCV tip 族 |
 | [eccv_stage_reports/](./eccv_stage_reports/) | 阶段门禁报告（R0/R1/P1A…） | 见各报告内标注 |
 | [eccv_stage_reports/TECHDRAW_VIEW_SPLIT.md](./eccv_stage_reports/TECHDRAW_VIEW_SPLIT.md) | **TechDraw XY-Cut 锁定方案**（问题→修复） | `main` 归档；实现同步 `eccv-p0` / P1a |
+| [eccv_stage_reports/GEN_FAIL_TAXONOMY.md](./eccv_stage_reports/GEN_FAIL_TAXONOMY.md) | **Gen 失败归因**（L1 硬统计 + L2 计划） | 数据自 `eccv-p0` / P1a runs；文档在 `main` |
 
 ### 阶段报告
 
@@ -34,6 +35,7 @@
 | [R0_latest.md](./eccv_stage_reports/R0_latest.md) | 后处理 A/B（脚本，不改 tip） |
 | [R1_latest.md](./eccv_stage_reports/R1_latest.md) | `eccv-p0` + parent `260723-162838` GT test |
 | [P1A_latest.md](./eccv_stage_reports/P1A_latest.md) | `feat/p1-prim-encoder-prefix` · run `260728-212715` |
+| [GEN_FAIL_TAXONOMY.md](./eccv_stage_reports/GEN_FAIL_TAXONOMY.md) | R1/`260728-201614` 等 · L1 decode vs rebuild |
 
 ### 其它
 
@@ -47,3 +49,7 @@
 ## TechDraw 一句话
 
 **先 XY-Cut 出 3 个 view regions，再 bbox-overlap 归属图元**；不要对图元中心做 KMeans(3)。详见 [TECHDRAW_VIEW_SPLIT.md](./eccv_stage_reports/TECHDRAW_VIEW_SPLIT.md)。
+
+## Gen 失败一句话
+
+R1（348 test，gen=50%）失败里 **rebuild≈76% / decode≈24%**；细到「引用/拟合/缝合」尚未打标。详见 [GEN_FAIL_TAXONOMY.md](./eccv_stage_reports/GEN_FAIL_TAXONOMY.md)。

@@ -17,7 +17,7 @@
   对比 R1 GT test: gen 50% / summary 0.042；旧 GT: gen 35% / summary 0.046
 - mid-24 的 summary↑（0.027→0.086）是**幸存者偏差**（gen 54%→33%），不能当涨分
 - `best.ckpt` = step **10696**（val_loss 0.225），之后 val_loss 漂到 ~0.258；**full official 没用 best**
-- 失败结构（full）: rebuild 321、decode 211、ok 162 → gen 主战场仍在，且 decode 比例偏高
+- 失败结构（full）: rebuild 321、decode 211、ok 162 → gen 主战场仍在，且 decode 比例偏高（跨 run 归因见 [GEN_FAIL_TAXONOMY.md](./GEN_FAIL_TAXONOMY.md)）
 
 ## 指标表
 

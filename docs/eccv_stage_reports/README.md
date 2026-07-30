@@ -26,6 +26,7 @@
 | 文件 | 所指 tip / 说明 |
 |------|-----------------|
 | [TECHDRAW_VIEW_SPLIT.md](./TECHDRAW_VIEW_SPLIT.md) | 划分错误原因 + XY-Cut 锁定方案（`main`） |
+| [GEN_FAIL_TAXONOMY.md](./GEN_FAIL_TAXONOMY.md) | Gen 低：L1 失败占比 + L2 打标计划 |
 | [R0_latest.md](./R0_latest.md) | 后处理 A/B |
 | [R1_latest.md](./R1_latest.md) | `eccv-p0` GT test |
 | [P1A_latest.md](./P1A_latest.md) | `feat/p1-prim-encoder-prefix` · `260728-212715` |
