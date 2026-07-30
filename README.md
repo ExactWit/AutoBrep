@@ -9,6 +9,9 @@
 
 > AutoBrep is a decoder-only Transformer model that autoregressively generates B-Rep geometry and topology tokens following a BFS order of the B-Rep topology graph. Geometric information is tokenized as bounding boxes paired with encoded UV-grid shape codes. Topological structure is represented via a special face identifier that maps face–edge adjacencies into reference tokens.
 
+### Documentation
+
+项目文档统一在 **`main` 的 [`docs/`](./docs/README.md)**（含 ECCV 路线、阶段报告、TechDraw XY-Cut 锁定方案）。功能 tip 只承载代码；文档内标注所指实现分支。
 
 ### Installing environments
 
