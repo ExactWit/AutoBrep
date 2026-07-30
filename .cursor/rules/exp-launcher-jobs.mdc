@@ -1,0 +1,42 @@
+---
+description: 所有训练/评测/推理 Job 必须经 exp_launcher 提交，禁止直接 nohup/run.sh
+alwaysApply: true
+---
+
+# Job 必须走 exp_launcher
+
+## 硬性要求
+
+- **禁止**用 `nohup`、后台 shell、`python scripts/train_*.py`、直接 `./run.sh train|test|infer|...` 启动正式或冒烟实验 Job。
+- **必须**通过 **exp_launcher**（Web UI 或 CLI）提交；入口以 registry `models.tsv` 的 `entry_id` / `git_ref` 为准。
+- 本地只允许：改代码、写文档、跑**无 GPU/无数据全量**的单测与小脚本（如 `pytest`、cache dry-run 且用户明确同意）。
+
+## 正确做法
+
+```bash
+# CLI（conda env: launcher）
+conda activate launcher
+exp_launcher status --json
+# Web: exp_launcher web → 选 entry（如 eccv-3view-mm-a）→ train/test
+
+# 查 Job
+exp_launcher jobs list --running --json
+exp_launcher jobs show <jid> --json
+```
+
+- AutoBrep 入口示例：`eccv-3view-mm-a`、`eccv-3view-p0` 等（见仓库 `models.tsv`）。
+- 超参、`cond_cache_root`、`ar_ckpt`、`--use-decoder-cross-attn` 等通过 launcher 的 arg fields / Job 配置传入，**不要**绕过 launcher 手写长命令。
+
+## 错误示例（禁止）
+
+```bash
+# ❌
+nohup ./run.sh train --exp-dir ... &
+nohup python -u scripts/train_eccv_pipeline.py ... &
+CUDA_VISIBLE_DEVICES=0 python scripts/train_eccv_pipeline.py ...
+```
+
+## 例外（仍须先问用户）
+
+- 用户**明确说**「不用 launcher、本地直接跑」时，才可临时绕过，并在回复里注明原因。
+- `BUILD_COND_CACHE=1` 等预处理：优先做成 launcher `preprocess` Job；若仅本地小 limit 调试，先征得同意。
