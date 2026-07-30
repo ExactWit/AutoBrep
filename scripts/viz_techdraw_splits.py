@@ -3,7 +3,7 @@
 
 Pipeline mirrors ``load_techdraw_geometry`` in ``eccv_data.py``:
   extract DXF + SVG → merge → filter_and_merge
-  → split_into_views (XY-Cut regions → bbox-overlap assign)
+  → split_into_views (L-layout gutter cuts → hard plane assign)
   → assign_loop_groups per view.
 
 Outputs per sample:

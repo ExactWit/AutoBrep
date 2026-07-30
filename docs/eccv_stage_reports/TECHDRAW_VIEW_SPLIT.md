@@ -1,56 +1,64 @@
 # TechDraw 三视图划分（锁定方案 · 归档于 main）
 
-> **状态：已敲定并归档到 `main`（2026-07-30）**  
+> **状态：L-layout 硬切（2026-07-30 修订）**  
 > **实现分支 / tip：** 训练侧同步在 `eccv-p0`（tag `autobrep-eccv-p0`）、`feat/p1-prim-encoder-prefix`（entry `eccv-3view-p1a`）。  
 > **文档唯一源：** 本文件在 `main` 的 `docs/`；其它分支只应引用，勿再分叉改文档。
 
 ## 问题定义（之前错在哪）
 
-旧方案本质是：
+### 旧方案 1：KMeans
 
 ```
 图元中心点 → 投影直方图谷底粗切 → k-means 细化 → 按质心贴 TL/BL/TR
 ```
 
-典型失败（如 `train/000001`）：
+典型失败（如 `train/000001`）：k-means 跨 gutter 吸图元。
 
-| 现象 | 原因 |
+### 旧方案 2：递归 XY-Cut（仍不够）
+
+递归「每次切当前最好的缝」会在侧视内部再切一刀，把主+俯粘在一起。  
+`train/000008`（DXF-only）：views 变成 `[35,9,9]`，主视顶端横线（y≈108）与俯视同框。
+
+根因：**三视图是带对齐约束的 L 版面，不是任意二叉树分割。**
+
+版面先验（本数据集常见）：
+
+| 约束 | 含义 |
 |------|------|
-| 俯视下半（孔/弧，y≈98）被并进主视 | **k-means 跨空白带吸图元**：主视簇更密，边界图元被拉走 |
-| 切缝落在错误位置（y≈78 而非真正 gutter≈132） | 谷底取「靠近 median」+ **投影一致性打分** 偏好了错误切 |
-| SVG 并入后版面炸裂 | DXF 与 SVG **坐标框不相容**仍硬 merge |
-| slot 名与观感拧巴 | `(-y,x)` 命名是纸面位置，不是语义「主/俯/侧」；viz 还 `invert_yaxis` |
-
-根因一句话：**三视图分离是版面/区域问题，不是 primitive feature 上的自然簇。**  
-对图元做 `KMeans(3)` 会被长线、跨区线、尺寸噪声干扰。
+| 主 ↔ 俯 | **同宽**（同一 x 带） |
+| 俯 ↔ 侧 | **同高**（同一 y 带） |
+| 三块之间 | 大间距 gutter，bbox **不应重叠** |
 
 ## 锁定方案（如何修）
 
 ```
 Primitive Set
   → 布局对象（bbox / center / length，噪声降权）
-  → Recursive XY-Cut 找出 3 个 view regions（投影空白 gutter，硬切）
-  → 按 bbox-overlap（辅 center-in-box）把每个图元归属到 region
+  → L-layout 双路径硬切（见下）→ 3 个 view regions
+  → 按 (x_cut, y_cut) 象限硬归属（禁止软 bbox 偷边界线）
   → assign_loop_groups → tensorize
 ```
 
-相对旧方案的关键差异：
+### 双路径（取对齐分更高者）
 
-1. **先区域、后归属** — 禁止主路径对图元做 3-means  
-2. **硬 gutter** — 空白带两侧不再跨缝 refine  
-3. **评分以 gutter 宽度为主** — 不再被假的投影一致性带偏  
-4. **不相容 SVG 丢弃** — `merge_dxfir` 用 bbox IoU/尺度过滤像素系污染  
-5. **短线/标注层降权** — 避免填平投影直方图  
+1. **xy（先主/侧栏，剩余俯视）**  
+   全局最佳 **x gutter** → 左栏 vs 侧视；再在左栏上切 **y gutter** → 主 / 俯。  
+2. **yx（先俯+侧行，剩余主视）**  
+   全局最佳 **y gutter** → 主视 vs 俯+侧行；再在该行上切 **x gutter** → 俯 / 侧。  
+   （`000008` 走此路径：俯与侧同高。）
 
-`000001` 验证：旧 `[17,13,9]` 孔进主视 → 新 `[13,13,13]` 三块干净分离。
+评分：gutter 宽度 + **同宽/同高对齐** + 三块规模平衡。  
+递归 XY-Cut 仅作 fallback。
+
+`000008`：DXF-only 由错误 `[35,9,9]` → `[15,20,18]`，主视顶边 y=108 留在主视；merged `[11,20,13]`。
 
 ## 实现位置（main）
 
 | 模块 | 路径 |
 |------|------|
-| 划分 | `core/src/autobrep/data/techdraw_dxf/split_views.py` |
+| 划分 | `core/src/autobrep/data/techdraw_dxf/split_views.py`（`_l_layout_plan`） |
 | 训练入口 | `load_techdraw_geometry` → `core/src/autobrep/data/eccv_data.py` |
-| 单测 | `tests/test_techdraw_split.py` |
+| 单测 | `tests/test_techdraw_split.py`（含「勿切侧视」回归） |
 | 可视化脚本 | `scripts/viz_techdraw_splits.py` |
 
 ## 运行时说明
@@ -61,7 +69,7 @@ Primitive Set
 ## 可视化产物
 
 `/data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/stage_gates/techdraw_viz/`  
-（pipeline 标记：`XY-Cut regions→bbox-assign`）
+（pipeline：`L-layout cuts→hard assign`）
 
 ## 相关分支索引
 

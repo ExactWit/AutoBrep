@@ -111,6 +111,63 @@ def test_gutter_keeps_stacked_views_apart():
     assert sum(1 for v in views if int(v.n_prims) > 0) == 3
 
 
+def test_l_layout_does_not_bisect_side_instead_of_front_top():
+    """
+    train/000008 failure mode: recursive XY-Cut bisects the side view and
+    merges front+top. L-layout must keep front top edge with the front view.
+    """
+    prims: list[PrimIR] = []
+    # front (high-y left), top (low-y left), side (low-y right) with internal gap
+    prims.extend(_box(80.0, 160.0, 20.0, 100.0))  # front
+    prims.append(
+        PrimIR(
+            type="line",
+            linetype="solid",
+            params={"start": [70.0, 110.0], "end": [90.0, 110.0]},  # front top edge
+        )
+    )
+    prims.extend(_box(80.0, 55.0, 20.0, 20.0))  # top
+    prims.append(
+        PrimIR(
+            type="circle",
+            linetype="solid",
+            params={
+                "center": [80.0, 55.0],
+                "radius": 8.0,
+                "start_angle": 0.0,
+                "end_angle": 2.0 * float(np.pi),
+            },
+        )
+    )
+    prims.extend(_box(180.0, 55.0, 40.0, 20.0))  # side left half
+    prims.extend(_box(250.0, 55.0, 20.0, 20.0))  # side right tip (tempts bisect)
+    pts = []
+    for p in prims:
+        if p.type == "line":
+            pts.extend([p.params["start"], p.params["end"]])
+        else:
+            c, r = p.params["center"], float(p.params["radius"])
+            pts.extend([[c[0] - r, c[1] - r], [c[0] + r, c[1] + r]])
+    arr = np.asarray(pts, dtype=np.float32)
+    sheet = DxfIR(n_prims=len(prims), prims=prims, bbox_min=arr.min(0), bbox_max=arr.max(0))
+    views = split_into_views(sheet)
+    assert sum(1 for v in views if int(v.n_prims) > 0) == 3
+    # Front is highest-y slot (views[0]); must own the y=110 top edge.
+    front_ys = []
+    for p in views[0].prims:
+        if p.type == "line":
+            front_ys.append(0.5 * (p.params["start"][1] + p.params["end"][1]))
+    assert any(abs(y - 110.0) < 1e-3 for y in front_ys)
+    # Circle (top) must not be in front
+    assert not any(p.type == "circle" for p in views[0].prims)
+    # No view should span both y~55 and y~160 (merged front+top)
+    for v in views:
+        if int(v.n_prims) == 0:
+            continue
+        y0, y1 = float(v.bbox_min[1]), float(v.bbox_max[1])
+        assert not (y0 < 70 and y1 > 140)
+
+
 def test_naming_stable_across_shuffle():
     sheet = _synthetic_sheet()
     a = split_into_views(sheet)

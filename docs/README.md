@@ -48,7 +48,7 @@
 
 ## TechDraw 一句话
 
-**先 XY-Cut 出 3 个 view regions，再 bbox-overlap 归属图元**；不要对图元中心做 KMeans(3)。详见 [TECHDRAW_VIEW_SPLIT.md](./eccv_stage_reports/TECHDRAW_VIEW_SPLIT.md)。
+**L-layout 硬切**：先按 gutter 分主/侧栏（或俯+侧行），剩余为第三视图；同宽/同高对齐打分；按切缝象限归属。详见 [TECHDRAW_VIEW_SPLIT.md](./eccv_stage_reports/TECHDRAW_VIEW_SPLIT.md)。
 
 ## Gen 失败一句话
 

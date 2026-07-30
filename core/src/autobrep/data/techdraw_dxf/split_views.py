@@ -3,8 +3,10 @@
 Pipeline (not primitive clustering):
   1. Filter / down-weight layout noise (short stubs, annotation layers).
   2. Build layout objects (bbox, center, length).
-  3. Detect 3 view *regions* with recursive XY-Cut on projection gutters.
-  4. Assign every primitive to a region by bbox overlap (not k-means).
+  3. Detect 3 view *regions* with constrained L-layout cuts on projection gutters
+     (prefer: split the front/side band first, remainder = top — or the dual
+     top/side row first). Recursive XY-Cut is only a fallback.
+  4. Assign every primitive by hard cut planes (not k-means / soft bbox steal).
 """
 
 from __future__ import annotations
@@ -175,7 +177,7 @@ def split_into_views(
     Partition primitives into ``n_views`` sheet views.
 
     Preferred path (``use_histogram=True``):
-      layout filter → XY-Cut view regions → bbox-overlap assignment.
+      layout filter → L-layout gutter cuts → hard plane assignment.
 
     ``use_histogram=False`` falls back to pure k-means on centers (legacy).
     """
@@ -191,6 +193,13 @@ def split_into_views(
     objs = _build_layout_objects(prims)
     if use_histogram and k >= 3 and len(prims) >= 3:
         try:
+            plan = _l_layout_plan(objs, n_regions=k)
+            if plan is not None:
+                labels = _assign_by_plan(objs, plan)
+                views = _labels_to_views_from_objs(objs, labels, n_views=n_views)
+                if _nonempty_count(views) >= min(3, k):
+                    return views
+                _LOG.info("[split_into_views] L-layout assignment produced empty views")
             regions = _xy_cut_regions(objs, n_regions=k)
             if regions is not None and len(regions) >= k:
                 labels = _assign_to_regions(objs, regions[:k])
@@ -199,7 +208,7 @@ def split_into_views(
                     return views
                 _LOG.info("[split_into_views] XY-Cut assignment produced empty views")
         except Exception as exc:  # noqa: BLE001
-            _LOG.info("[split_into_views] XY-Cut failed (%s); k-means fallback", exc)
+            _LOG.info("[split_into_views] region split failed (%s); k-means fallback", exc)
 
     centers = np.stack([o.center for o in objs], axis=0)
     labels = _cluster_labels(centers, k=k)
@@ -322,21 +331,220 @@ class ViewRegion:
         return 0.5 * (self.bbox_min + self.bbox_max)
 
 
-def _xy_cut_regions(objs: list[LayoutObj], *, n_regions: int = 3) -> list[ViewRegion] | None:
-    """
-    Recursive XY-Cut: find largest projection gutter, split, recurse until n_regions.
+@dataclass
+class LLayoutPlan:
+    """Constrained 3-view sheet cut (no recursive over-splitting of one view)."""
 
-    Uses signal (non-noise) objects to locate gutters; region boxes are tight
-    bboxes of contained signal objects.
+    mode: str  # "xy" | "yx"
+    x_cut: float
+    y_cut: float
+    regions: list[ViewRegion]
+
+
+def _bbox_of_objs(group: list[LayoutObj]) -> ViewRegion:
+    mn = np.stack([o.bbox_min for o in group]).min(axis=0).astype(np.float32)
+    mx = np.stack([o.bbox_max for o in group]).max(axis=0).astype(np.float32)
+    return ViewRegion(bbox_min=mn, bbox_max=mx)
+
+
+def _best_gap(
+    group: list[LayoutObj],
+    axis: int,
+    *,
+    min_frac: float = 0.05,
+) -> tuple[float, float, float] | None:
+    """Return ``(width, mid, score)`` of best gutter on axis, or None."""
+    if len(group) < 2:
+        return None
+    centers = np.stack([o.center for o in group])
+    weights = np.asarray([o.weight for o in group], dtype=np.float64)
+    gaps = _empty_gaps_1d(centers[:, axis], weights, min_frac=min_frac)
+    return gaps[0] if gaps else None
+
+
+def _extent_align_score(a: ViewRegion, b: ViewRegion, axis: int) -> float:
+    """1 if two regions share nearly the same span on ``axis`` (width or height)."""
+    a0, a1 = float(a.bbox_min[axis]), float(a.bbox_max[axis])
+    b0, b1 = float(b.bbox_min[axis]), float(b.bbox_max[axis])
+    span = max(a1 - a0, b1 - b0, 1e-6)
+    # center shift + length mismatch, normalized
+    mid_diff = abs(0.5 * (a0 + a1) - 0.5 * (b0 + b1)) / span
+    len_diff = abs((a1 - a0) - (b1 - b0)) / span
+    return float(np.clip(1.0 - 0.5 * mid_diff - 0.5 * len_diff, 0.0, 1.0))
+
+
+def _plan_from_groups(
+    groups: list[list[LayoutObj]],
+    *,
+    mode: str,
+    x_cut: float,
+    y_cut: float,
+    gutter_score: float,
+) -> tuple[LLayoutPlan, float] | None:
+    nonempty = [g for g in groups if g]
+    if len(nonempty) < 3:
+        return None
+    # Keep three densest if somehow >3
+    nonempty = sorted(nonempty, key=len, reverse=True)[:3]
+    regions = [_bbox_of_objs(g) for g in nonempty]
+    # Alignment: one pair shares width (axis=0), one pair shares height (axis=1).
+    # Typical L sheet: front↔top same width; top↔side same height.
+    best_align = 0.0
+    for i in range(3):
+        for j in range(i + 1, 3):
+            for k in range(3):
+                if k == i or k == j:
+                    continue
+                # (i,j) share width; (j,k) share height — or swap
+                s1 = _extent_align_score(regions[i], regions[j], 0) + _extent_align_score(
+                    regions[j], regions[k], 1
+                )
+                s2 = _extent_align_score(regions[i], regions[j], 1) + _extent_align_score(
+                    regions[j], regions[k], 0
+                )
+                best_align = max(best_align, s1, s2)
+    sizes = sorted(len(g) for g in nonempty)
+    bal = sizes[0] / max(sizes[-1], 1)
+    # Prefer wide gutters, orthographic alignment, and not one tiny leftover.
+    score = gutter_score * (0.35 + 0.35 * best_align + 0.30 * bal)
+    # Light pad so borderline centers still fall inside their region box (viz only);
+    # assignment uses hard cuts, not these boxes.
+    for r in regions:
+        span = np.maximum(r.bbox_max - r.bbox_min, 1e-3)
+        pad = 0.01 * span
+        r.bbox_min = (r.bbox_min - pad).astype(np.float32)
+        r.bbox_max = (r.bbox_max + pad).astype(np.float32)
+    plan = LLayoutPlan(mode=mode, x_cut=float(x_cut), y_cut=float(y_cut), regions=regions)
+    return plan, float(score)
+
+
+def _l_layout_plan(objs: list[LayoutObj], *, n_regions: int = 3) -> LLayoutPlan | None:
+    """
+    Constrained L-layout split for 3 orthographic views.
+
+    Two candidate cut orders (pick higher score):
+
+    * **xy** — first split left/right (main column vs side), then split the
+      left column into front/top. Matches: 「先主/侧，剩余俯视」.
+    * **yx** — first split high/low (front vs top+side row), then split the
+      multi-view row into top/side. Matches sheets where top & side share height
+      (e.g. train/000008).
+
+    Recursive XY-Cut is avoided as the primary path because it may bisect the
+    side view's internal gaps instead of separating the left column.
     """
     signal = _signal_objs(objs)
     if len(signal) < n_regions:
         return None
 
-    def _bbox_of(group: list[LayoutObj]) -> ViewRegion:
-        mn = np.stack([o.bbox_min for o in group]).min(axis=0).astype(np.float32)
-        mx = np.stack([o.bbox_max for o in group]).max(axis=0).astype(np.float32)
-        return ViewRegion(bbox_min=mn, bbox_max=mx)
+    candidates: list[tuple[LLayoutPlan, float]] = []
+
+    # --- Path xy: main|side first, then front/top on the left column ---
+    xg = _best_gap(signal, 0)
+    if xg is not None:
+        _, x_mid, x_score = xg
+        left = [o for o in signal if o.center[0] < x_mid]
+        right = [o for o in signal if o.center[0] >= x_mid]
+        # Split the column that still stacks two views (usually left).
+        for primary, other in ((left, right), (right, left)):
+            if len(primary) < 2 or not other:
+                continue
+            yg = _best_gap(primary, 1)
+            if yg is None:
+                continue
+            _, y_mid, y_score = yg
+            hi = [o for o in primary if o.center[1] >= y_mid]
+            lo = [o for o in primary if o.center[1] < y_mid]
+            if not hi or not lo:
+                continue
+            got = _plan_from_groups(
+                [hi, lo, other],
+                mode="xy",
+                x_cut=x_mid,
+                y_cut=y_mid,
+                gutter_score=x_score + y_score,
+            )
+            if got is not None:
+                candidates.append(got)
+
+    # --- Path yx: front vs (top|side) row first, then top/side ---
+    yg = _best_gap(signal, 1)
+    if yg is not None:
+        _, y_mid, y_score = yg
+        high = [o for o in signal if o.center[1] >= y_mid]
+        low = [o for o in signal if o.center[1] < y_mid]
+        for primary, other in ((low, high), (high, low)):
+            if len(primary) < 2 or not other:
+                continue
+            xg2 = _best_gap(primary, 0)
+            if xg2 is None:
+                continue
+            _, x_mid, x_score = xg2
+            left = [o for o in primary if o.center[0] < x_mid]
+            right = [o for o in primary if o.center[0] >= x_mid]
+            if not left or not right:
+                continue
+            got = _plan_from_groups(
+                [left, right, other],
+                mode="yx",
+                x_cut=x_mid,
+                y_cut=y_mid,
+                gutter_score=y_score + x_score,
+            )
+            if got is not None:
+                candidates.append(got)
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: -t[1])
+    return candidates[0][0]
+
+
+def _assign_by_plan(objs: list[LayoutObj], plan: LLayoutPlan) -> np.ndarray:
+    """
+    Hard plane assignment from L-cuts.
+
+    Each primitive is placed by (x_cut, y_cut) quadrant, then matched to the
+    plan region whose center lies in that quadrant. Prevents a long border
+    line of the front view from being stolen by a tight top-view bbox.
+    """
+    x_cut, y_cut = plan.x_cut, plan.y_cut
+    reg_centers = [r.center for r in plan.regions]
+    labels = np.zeros(len(objs), dtype=np.int64)
+    for i, o in enumerate(objs):
+        cx, cy = float(o.center[0]), float(o.center[1])
+        left = cx < x_cut
+        high = cy >= y_cut
+        cands: list[int] = []
+        for k, rc in enumerate(reg_centers):
+            r_left = float(rc[0]) < x_cut
+            r_high = float(rc[1]) >= y_cut
+            if r_left == left and r_high == high:
+                cands.append(k)
+        if not cands:
+            dists = [float(np.linalg.norm(o.center - rc)) for rc in reg_centers]
+            labels[i] = int(np.argmin(dists))
+        elif len(cands) == 1:
+            labels[i] = cands[0]
+        else:
+            dists = [float(np.linalg.norm(o.center - reg_centers[k])) for k in cands]
+            labels[i] = cands[int(np.argmin(dists))]
+    return labels
+
+
+def _xy_cut_regions(objs: list[LayoutObj], *, n_regions: int = 3) -> list[ViewRegion] | None:
+    """
+    Recursive XY-Cut fallback: find largest projection gutter, split, recurse.
+
+    Uses signal (non-noise) objects to locate gutters; region boxes are tight
+    bboxes of contained signal objects.
+
+    Prefer :func:`_l_layout_plan` for 3-view sheets — recursive cuts can bisect
+    one view's internal gaps (e.g. side) instead of separating front/top.
+    """
+    signal = _signal_objs(objs)
+    if len(signal) < n_regions:
+        return None
 
     def _split(group: list[LayoutObj]) -> tuple[list[LayoutObj], list[LayoutObj], float] | None:
         if len(group) < 2:
@@ -410,7 +618,7 @@ def _xy_cut_regions(objs: list[LayoutObj], *, n_regions: int = 3) -> list[ViewRe
         nonempty.sort(key=len, reverse=True)
         groups = nonempty[:n_regions]
 
-    regions = [_bbox_of(g) for g in groups[:n_regions]]
+    regions = [_bbox_of_objs(g) for g in groups[:n_regions]]
     # Expand boxes slightly so borderline prims still overlap their region.
     for r in regions:
         span = np.maximum(r.bbox_max - r.bbox_min, 1e-3)
