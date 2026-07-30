@@ -10,10 +10,11 @@
 |------------|------|------------|
 | `main` | 文档归档 + TechDraw 库代码归档 | — |
 | `eccv-3view-geom` | 3view 条件基线 | entry `eccv-3view-geom` |
-| `eccv-p0` | P0：fast metrics + XY-Cut TechDraw + analytic STEP | tag `autobrep-eccv-p0` · entry `eccv-3view-p0` |
-| `feat/p1-prim-encoder-prefix` | P1-A：PrimTransformer → soft prefix | entry `eccv-3view-p1a` |
-| `feat/p1-decoder-cross-attn` / `eccv-p1` | P1-B：decoder cross-attn | entry `eccv-3view-p1b` |
-| `eccv-p2` | P2 冲榜开关位 | entry 见 registry |
+| `eccv-p0` | P0：fast metrics + L-layout TechDraw + analytic STEP | tag `autobrep-eccv-p0` · entry `eccv-3view-p0` |
+| `feat/p1-prim-encoder-prefix` | P1-A soft prefix（失败归档） | entry `eccv-3view-p1a` |
+| `feat/p1-decoder-cross-attn` | P1-B cross-attn 代码源 | entry `eccv-3view-p1b` |
+| `feat/cond-mm-stage-a` | **MM Stage A 主线**：多模态 + xattn + surf head | entry `eccv-3view-mm-a` |
+| `eccv-p2` | P2 冲榜开关位 | entry `eccv-3view-p2` |
 
 ## 文档目录
 
@@ -27,6 +28,8 @@
 | [eccv_stage_reports/](./eccv_stage_reports/) | 阶段门禁报告（R0/R1/P1A…） | 见各报告内标注 |
 | [eccv_stage_reports/TECHDRAW_VIEW_SPLIT.md](./eccv_stage_reports/TECHDRAW_VIEW_SPLIT.md) | **TechDraw XY-Cut 锁定方案**（问题→修复） | `main` 归档；实现同步 `eccv-p0` / P1a |
 | [eccv_stage_reports/GEN_FAIL_TAXONOMY.md](./eccv_stage_reports/GEN_FAIL_TAXONOMY.md) | **Gen 失败归因**（L1 硬统计 + L2 计划） | 数据自 `eccv-p0` / P1a runs；文档在 `main` |
+| [eccv_stage_reports/COND_MM_ROADMAP.md](./eccv_stage_reports/COND_MM_ROADMAP.md) | **条件多模态 Stage A/B/C** + cache 约定 | tip `feat/cond-mm-stage-a` |
+| [eccv_stage_reports/MMA_latest.md](./eccv_stage_reports/MMA_latest.md) | Stage A 实验记录 | `eccv-3view-mm-a` |
 
 ### 阶段报告
 
