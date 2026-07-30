@@ -18,7 +18,7 @@ TASK_ARG=""
 CHECKPOINT_ARG=""
 WEIGHT_FOLDER="${WEIGHT_FOLDER:-/data/hdd/outputs/AutoBrep}"
 GPU="${GPU:-0}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
 NUM_BATCHES="${NUM_BATCHES:-10}"
 COMPLEXITY="${COMPLEXITY:-from_condition}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
@@ -38,7 +38,7 @@ LR="${LR:-0.0001}"
 PC_NUM_POINTS="${PC_NUM_POINTS:-2048}"
 PC_NUM_LATENTS="${PC_NUM_LATENTS:-64}"
 VIEW_NUM_LATENTS="${VIEW_NUM_LATENTS:-64}"
-ACCUM_GRAD="${ACCUM_GRAD:-2}"
+ACCUM_GRAD="${ACCUM_GRAD:-4}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 PC_CONDITIONED="${PC_CONDITIONED:-0}"
 VIEW_CONDITIONED="${VIEW_CONDITIONED:-0}"
@@ -192,14 +192,14 @@ case "${MODE}" in
     "train": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
       "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
-      "batch_size": 2,
+      "batch_size": 1,
       "max_epochs": 50,
       "max_steps": -1,
       "val_check_interval": 500,
       "limit_val_batches": 100,
       "lr": 0.0001,
       "view_num_latents": 64,
-      "accumulate_grad_batches": 2,
+      "accumulate_grad_batches": 4,
       "num_workers": 2,
       "official_val_samples": -1,
       "official_val_samples_mid": 24,
@@ -295,6 +295,8 @@ case "${MODE}" in
       "--aux-view-bbox-weight",
       "--enable-aux-surf-type",
       "--aux-surf-type-weight",
+      "--cond-cache-root",
+      "--ar-ckpt",
       "--fsq-upgrade"
     ],
     "test": [
@@ -372,7 +374,12 @@ case "${MODE}" in
       {"key": "official_val_every", "flag": "--official-val-every", "label": "STEP 每 N epoch（0=用 frac 里程碑）", "type": "number"},
       {"key": "official_val_epoch_frac", "flag": "--official-val-epoch-frac", "label": "STEP 里程碑比例(0.25→25/50/75/100%)", "type": "number"},
       {"key": "no_official_val", "flag": "--no-official-val", "label": "关闭官方 STEP 评测", "type": "bool"},
-      {"key": "complexity", "flag": "--complexity", "label": "复杂度 token（训练仍用 GT 面数；推理/官方val）", "type": "select", "choices": ["from_condition", "easy", "medium", "hard", "random"]}
+      {"key": "complexity", "flag": "--complexity", "label": "复杂度 token（训练仍用 GT 面数；推理/官方val）", "type": "select", "choices": ["from_condition", "easy", "medium", "hard", "random"]},
+      {"key": "use_decoder_cross_attn", "flag": "--use-decoder-cross-attn", "label": "decoder cross-attn", "type": "bool"},
+      {"key": "enable_aux_surf_type", "flag": "--enable-aux-surf-type", "label": "aux surf-type head", "type": "bool"},
+      {"key": "aux_surf_type_weight", "flag": "--aux-surf-type-weight", "label": "surf-type loss 权重", "type": "number"},
+      {"key": "cond_cache_root", "flag": "--cond-cache-root", "label": "cond_cache_v2 根目录", "type": "text"},
+      {"key": "ar_ckpt", "flag": "--ar-ckpt", "label": "冻结 AR parent ckpt", "type": "text"}
     ],
     "infer": [
       {"key": "weight_folder", "flag": "--weight-folder", "label": "权重目录", "type": "text"},
