@@ -66,13 +66,18 @@ def extract_dxf_primitives(path: Path | str, *, drop_insert: bool = True) -> Dxf
     for entity in msp:
         etype = entity.dxftype()
         linetype = _entity_linetype(entity)
+        layer = str(getattr(entity.dxf, "layer", "") or "")
         try:
             if etype == "LINE":
                 prims.append(
                     PrimIR(
                         type="line",
                         linetype=linetype,
-                        params={"start": _xy(entity.dxf.start), "end": _xy(entity.dxf.end)},
+                        params={
+                            "start": _xy(entity.dxf.start),
+                            "end": _xy(entity.dxf.end),
+                            "layer": layer,
+                        },
                     )
                 )
             elif etype == "CIRCLE":
@@ -85,6 +90,7 @@ def extract_dxf_primitives(path: Path | str, *, drop_insert: bool = True) -> Dxf
                             "radius": float(entity.dxf.radius),
                             "start_angle": 0.0,
                             "end_angle": 2.0 * float(np.pi),
+                            "layer": layer,
                         },
                     )
                 )
@@ -101,6 +107,7 @@ def extract_dxf_primitives(path: Path | str, *, drop_insert: bool = True) -> Dxf
                             "radius": float(entity.dxf.radius),
                             "start_angle": start,
                             "end_angle": end,
+                            "layer": layer,
                         },
                     )
                 )
@@ -115,6 +122,7 @@ def extract_dxf_primitives(path: Path | str, *, drop_insert: bool = True) -> Dxf
                             "ratio": float(entity.dxf.ratio),
                             "start_param": float(getattr(entity.dxf, "start_param", 0.0)),
                             "end_param": float(getattr(entity.dxf, "end_param", 2.0 * np.pi)),
+                            "layer": layer,
                         },
                     )
                 )
@@ -128,6 +136,7 @@ def extract_dxf_primitives(path: Path | str, *, drop_insert: bool = True) -> Dxf
                             "control_points": cps,
                             "degree": int(getattr(entity.dxf, "degree", 3)),
                             "closed": bool(getattr(entity, "closed", False)),
+                            "layer": layer,
                         },
                     )
                 )
@@ -137,7 +146,11 @@ def extract_dxf_primitives(path: Path | str, *, drop_insert: bool = True) -> Dxf
                     PrimIR(
                         type="lwpolyline",
                         linetype=linetype,
-                        params={"points": pts, "closed": bool(entity.closed)},
+                        params={
+                            "points": pts,
+                            "closed": bool(entity.closed),
+                            "layer": layer,
+                        },
                     )
                 )
             elif etype == "INSERT":
@@ -147,7 +160,11 @@ def extract_dxf_primitives(path: Path | str, *, drop_insert: bool = True) -> Dxf
                     PrimIR(
                         type="other",
                         linetype=linetype,
-                        params={"center": _xy(entity.dxf.insert), "name": str(entity.dxf.name)},
+                        params={
+                            "center": _xy(entity.dxf.insert),
+                            "name": str(entity.dxf.name),
+                            "layer": layer,
+                        },
                     )
                 )
         except Exception:

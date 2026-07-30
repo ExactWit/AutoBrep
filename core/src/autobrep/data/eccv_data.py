@@ -60,8 +60,14 @@ def load_techdraw_geometry(
     dataset_root: Path, row: Dict[str, Any]
 ) -> dict[str, torch.Tensor]:
     """
-    Geometric TechDraw: parse DXF + SVG, merge, split into 3 sheet views,
-    per-view local normalize → tensors (V, N, ...).
+    Geometric TechDraw → tensors (V, N, ...).
+
+    Canonical pipeline (locked):
+      DXF (+ compatible SVG) → filter_and_merge → merge_dxfir
+      → split_into_views: XY-Cut view *regions* then bbox-overlap assign
+      → assign_loop_groups per view → tensorize (local bbox normalize)
+
+    Do **not** cluster primitives with k-means as the primary split.
     """
     root = Path(dataset_root)
     parts = []
