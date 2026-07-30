@@ -12,9 +12,9 @@
 | R1 | 现有 3view ckpt + analytic GT test | tip `eccv-p0` · parent `260723-162838` |
 | TechDraw 划分 | L-layout 硬切（锁定） | [TECHDRAW_VIEW_SPLIT.md](./TECHDRAW_VIEW_SPLIT.md) |
 | P1-A | soft prefix（**失败归档**） | `feat/p1-prim-encoder-prefix` |
-| **MM Stage A** | 多模态条件对齐 | **`feat/cond-mm-stage-a`** · [COND_MM_ROADMAP.md](./COND_MM_ROADMAP.md) |
-| MM Stage B | 局部解冻 | 过 A 门禁后开 tip |
-| MM Stage C | 解析参数 + 约束 | 过 B 后 |
+| **MM Stage A** | 多模态条件对齐 | **`feat/cond-mm-stage-a`** · [COND_MM_ROADMAP.md](./COND_MM_ROADMAP.md) · [MMA_latest.md](./MMA_latest.md) |
+| MM Stage B | 局部解冻 | 过 A 后 · [MMB_latest.md](./MMB_latest.md) |
+| MM Stage C | 解析参数 + 约束 | 过 B 后 · [MMC_latest.md](./MMC_latest.md) |
 
 ## 对照基线
 
