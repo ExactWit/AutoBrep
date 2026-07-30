@@ -419,6 +419,19 @@ JSON
   preprocess)
     activate_env
     DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/eccv2026ws-cad-data}"
+    if [[ "${BUILD_COND_CACHE:-0}" == "1" ]]; then
+      OUT="${COND_CACHE_ROOT:-${DATA_ROOT}/processed/cond_cache_v2}"
+      echo "[run.sh] build cond_cache_v2 → ${OUT}" >&2
+      CACHE_ARGS=(
+        --dataset-root "${DATA_ROOT}"
+        --out-root "${OUT}"
+        --workers "${NUM_WORKERS}"
+      )
+      if [[ "${LIMIT_SAMPLES}" != "0" ]]; then
+        CACHE_ARGS+=(--limit "${LIMIT_SAMPLES}")
+      fi
+      exec python -u "${REPO_DIR}/scripts/build_eccv_cond_cache_v2.py" "${CACHE_ARGS[@]}"
+    fi
     PRE_ARGS=(
       --data-dir "${DATA_ROOT}"
       --max-face "${MAX_FACE}"
