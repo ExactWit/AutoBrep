@@ -71,6 +71,46 @@ def test_hist_split_three_nonempty():
     assert float(c0[1]) > 10.0
 
 
+def test_gutter_keeps_stacked_views_apart():
+    """
+    Front strip (high-y) must not absorb mid-height holes that belong to the
+    top view above a clear empty gutter — the old hist+kmeans failure mode.
+    """
+    prims: list[PrimIR] = []
+    # front @ y=150 (high), top @ y=40, side @ x=200
+    prims.extend(_box(50.0, 150.0, 80.0, 20.0))
+    prims.extend(_box(50.0, 40.0, 80.0, 50.0))
+    prims.extend(_box(200.0, 40.0, 20.0, 50.0))
+    # hole near the top-view upper edge (still below gutter ~95–130)
+    prims.append(
+        PrimIR(
+            type="circle",
+            linetype="solid",
+            params={
+                "center": [50.0, 80.0],
+                "radius": 5.0,
+                "start_angle": 0.0,
+                "end_angle": 2.0 * float(np.pi),
+            },
+        )
+    )
+    pts = []
+    for p in prims:
+        if p.type == "line":
+            pts.extend([p.params["start"], p.params["end"]])
+        else:
+            c, r = p.params["center"], float(p.params["radius"])
+            pts.extend([[c[0] - r, c[1] - r], [c[0] + r, c[1] + r]])
+    arr = np.asarray(pts, dtype=np.float32)
+    sheet = DxfIR(n_prims=len(prims), prims=prims, bbox_min=arr.min(0), bbox_max=arr.max(0))
+    views = split_into_views(sheet)
+    # circle must not share the highest-y (front) view
+    front = views[0]
+    front_has_circle = any(p.type == "circle" for p in front.prims)
+    assert not front_has_circle
+    assert sum(1 for v in views if int(v.n_prims) > 0) == 3
+
+
 def test_naming_stable_across_shuffle():
     sheet = _synthetic_sheet()
     a = split_into_views(sheet)

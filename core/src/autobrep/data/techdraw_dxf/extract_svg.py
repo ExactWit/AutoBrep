@@ -15,7 +15,7 @@ _CMD_RE = re.compile(
 )
 
 
-def _tokenizeize_path(d: str, *, curve_samples: int = 4) -> list[list[float]]:
+def _polygonize_path(d: str, *, curve_samples: int = 4) -> list[list[float]]:
     """Approximate SVG path `d` as a polyline in absolute coords."""
     if not d:
         return []

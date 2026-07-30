@@ -18,8 +18,8 @@ eccv-3view-geom (baseline @ 0b2c8b9)
 | entry_id | git_ref | 相对基线 |
 |----------|---------|----------|
 | `eccv-3view-geom` | `eccv-3view-geom` | 3view + KV fix |
-| `eccv-3view-p0` | `autobrep-eccv-p0` / `eccv-p0` | fast metrics + hist-split/groups + analytic STEP postprocess |
-| `eccv-3view-p1a` | `feat/p1-prim-encoder-prefix` | 图元 Transformer Encoder → soft prefix（冻 AR） |
+| `eccv-3view-p0` | `autobrep-eccv-p0` / `eccv-p0` | fast metrics + **XY-Cut TechDraw regions** + groups + analytic STEP postprocess |
+| `eccv-3view-p1a` | `feat/p1-prim-encoder-prefix` | 图元 Transformer Encoder→M=64 soft prefix（冻 AR）；CLI `--use-prim-seq-encoder 1` |
 | `eccv-3view-p1b` | `feat/p1-decoder-cross-attn` | AR 每层 cross-attn（冻 AR 原权重） |
 
 ## 开关
@@ -28,11 +28,28 @@ eccv-3view-geom (baseline @ 0b2c8b9)
 |------|------|------|
 | Level-1 fast metrics | on | `val/fast/*` + `metrics/fast_val_epochXXX.json` |
 | `--postprocess-analytic` | 1 | STEP 写出前解析曲面替换 + ShapeFix；`0` 做 A/B |
-| hist-split | on | `split_into_views(use_histogram=True)`；失败回退 k-means |
+| TechDraw 三视图划分 | **XY-Cut regions**（锁定） | 先投影空白带切出 3 个 view box，再按 bbox-overlap 归属图元；不相容 SVG 丢弃；失败才回退 k-means。见下文「TechDraw 管线」 |
 | P1 prefix encoder | entry 决定 | `eccv-3view-p1a` |
 | P1 decoder xattn | entry 决定 | `eccv-3view-p1b` |
 | P2 aux losses | off | `eccv-p2` 可配开关 |
 | FSQ 精度上调 | off | P2 冲榜单独开关 |
+
+## TechDraw 管线（锁定）
+
+```
+DXF (+ compatible SVG)
+  → filter_and_merge（短线/标注层降权、共线合并）
+  → merge_dxfir（坐标框不相容的 SVG 丢弃，避免像素系污染）
+  → split_into_views：Recursive XY-Cut 找 3 个 view regions
+  → 图元按 bbox-overlap / center-in-box 归属（非 KMeans 主路径）
+  → assign_loop_groups → tensorize（分 view 局部归一化）
+```
+
+实现：`core/src/autobrep/data/techdraw_dxf/split_views.py`  
+入口：`load_techdraw_geometry`（`eccv_data.py`）  
+可视化：`scripts/viz_techdraw_splits.py` → `stage_gates/techdraw_viz/`
+
+**不要**再把「对图元中心做 3-means」当作主方案。
 
 ## 评测对照 run_id
 
