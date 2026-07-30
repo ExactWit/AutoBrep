@@ -23,13 +23,19 @@ from autobrep.data.techdraw_dxf import (
     tensors_to_torch,
 )
 from autobrep.data.techdraw_dxf.schema import DxfIR
+from autobrep.data.surf_types import (
+    SURF_TYPE_MAX_FACES,
+    SURF_TYPE_PAD,
+    surf_type_name_to_id,
+)
 
 
 VIEW_SIZE = 224
+# Locked order for cond_cache_v2 / Stage A (see COND_MM_ROADMAP.md)
 RENDER_COLS = (
-    "render_transparent",
     "render_hlg",
     "render_hlg_translucent",
+    "render_transparent",
 )
 
 
@@ -64,7 +70,7 @@ def load_techdraw_geometry(
 
     Canonical pipeline (locked):
       DXF (+ compatible SVG) → filter_and_merge → merge_dxfir
-      → split_into_views: XY-Cut view *regions* then bbox-overlap assign
+      → split_into_views: L-layout gutter cuts then hard plane assign
       → assign_loop_groups per view → tensorize (local bbox normalize)
 
     Do **not** cluster primitives with k-means as the primary split.
@@ -112,17 +118,86 @@ def load_techdraw_dxf(dataset_root: Path, row: Dict[str, Any]) -> dict[str, torc
     return load_techdraw_geometry(dataset_root, row)
 
 
+def load_surf_type_ids(
+    dataset_root: Path,
+    sample_id: str,
+    *,
+    split_hint: str = "",
+    max_faces: int = SURF_TYPE_MAX_FACES,
+) -> torch.Tensor:
+    """Load multi-class face types from processed/brepir → (max_faces,) int64."""
+    root = Path(dataset_root)
+    ids = torch.full((max_faces,), SURF_TYPE_PAD, dtype=torch.int64)
+    candidates: list[Path] = []
+    if split_hint:
+        candidates.append(root / "processed" / "brepir" / split_hint / f"{sample_id}.json")
+    for sp in ("train", "val", "test", "public_test"):
+        candidates.append(root / "processed" / "brepir" / sp / f"{sample_id}.json")
+    path = next((p for p in candidates if p.is_file()), None)
+    if path is None:
+        return ids
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        faces = data.get("faces") or []
+        n = min(len(faces), max_faces)
+        for i in range(n):
+            ids[i] = int(surf_type_name_to_id(faces[i].get("type", "bspline")))
+    except Exception:  # noqa: BLE001
+        pass
+    return ids
+
+
+def load_cond_cache_v2(
+    cache_root: Path, sample_id: str, *, split: str = "train"
+) -> dict[str, torch.Tensor] | None:
+    """Return cached condition tensors or None if missing."""
+    path = Path(cache_root) / split / f"{sample_id}.pt"
+    if not path.is_file():
+        # try other splits
+        for sp in ("train", "val", "test", "public_test"):
+            alt = Path(cache_root) / sp / f"{sample_id}.pt"
+            if alt.is_file():
+                path = alt
+                break
+        else:
+            return None
+    try:
+        obj = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(obj, dict):
+        return None
+    out: dict[str, torch.Tensor] = {}
+    for k in (
+        "images",
+        "prim_types",
+        "prim_linetypes",
+        "prim_geom",
+        "prim_mask",
+        "prim_group_ids",
+        "prim_group_roles",
+        "surf_type_ids",
+    ):
+        if k in obj:
+            out[k] = obj[k]
+    return out if "images" in out and "prim_types" in out else None
+
+
 class ECCVViewDataModule(ARDataModule):
     """
     ARDataModule + 3 render images + TechDraw geometry (DXF+SVG, 3 sheet views).
 
     TechDraw is never rasterized; primitives are set-encoded per orthographic view.
+    Optional ``cond_cache_root`` skips online DXF/SVG/render I/O (cond_cache_v2).
     """
 
     def __init__(
         self,
         dataset_root: Optional[str] = None,
         view_size: int = VIEW_SIZE,
+        cond_cache_root: Optional[str] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -132,6 +207,9 @@ class ECCVViewDataModule(ARDataModule):
             else Path(self.hparams.data_root).resolve().parents[1]
         )
         self._view_size = int(view_size)
+        self._cond_cache_root = (
+            Path(cond_cache_root).resolve() if cond_cache_root else None
+        )
 
     @property
     def columns(self) -> List[str]:
@@ -206,15 +284,40 @@ class ECCVViewDataModule(ARDataModule):
                 data[key] = row[key]
         return data
 
+    def _infer_split(self, row: Dict[str, Any]) -> str:
+        for col in ("techdraw_dxf_path", "render_hlg", "render_transparent"):
+            rel = str(row.get(col) or "")
+            for sp in ("train", "val", "test", "public_test", "test_public"):
+                if rel.startswith(sp + "/") or f"/{sp}/" in rel:
+                    return "public_test" if sp == "test_public" else sp
+        return "train"
+
     def map_func(self, row: Dict[str, Any], aug: bool) -> Dict[str, Any]:
         output = super().map_func(row, aug=aug)
-        output["images"] = load_render_views(
-            self._dataset_root, row, size=self._view_size
-        )
-        dxf = load_techdraw_geometry(self._dataset_root, row)
-        output.update(dxf)
-        sid = row.get("sample_id") or row.get("stem") or ""
-        output["sample_id"] = str(sid)
+        sid = str(row.get("sample_id") or row.get("stem") or "")
+        output["sample_id"] = sid
+        split = self._infer_split(row)
+
+        cached = None
+        if self._cond_cache_root is not None and sid:
+            cached = load_cond_cache_v2(self._cond_cache_root, sid, split=split)
+
+        if cached is not None:
+            output.update(cached)
+        else:
+            output["images"] = load_render_views(
+                self._dataset_root, row, size=self._view_size
+            )
+            dxf = load_techdraw_geometry(self._dataset_root, row)
+            output.update(dxf)
+            output["surf_type_ids"] = load_surf_type_ids(
+                self._dataset_root, sid, split_hint=split
+            )
+
+        if "surf_type_ids" not in output:
+            output["surf_type_ids"] = load_surf_type_ids(
+                self._dataset_root, sid, split_hint=split
+            )
         return output
 
     @property
@@ -227,4 +330,5 @@ class ECCVViewDataModule(ARDataModule):
         output["prim_mask"] = torch.bool
         output["prim_group_ids"] = torch.int64
         output["prim_group_roles"] = torch.int64
+        output["surf_type_ids"] = torch.int64
         return output

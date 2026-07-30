@@ -1,0 +1,48 @@
+# MM Stage A: smoke → train → GT test (exp_launcher workflow sketch)
+# Entry: eccv-3view-mm-a @ feat/cond-mm-stage-a
+name: eccv-mm-stage-a
+description: >
+  Freeze AR+FSQ; train multimodal encoder + decoder cross-attn + surf-type head.
+  Requires cond_cache_v2. Gate vs R1 260728-201614.
+
+defaults:
+  entry_id: eccv-3view-mm-a
+  parent_ckpt: /data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/260723-162838/eccv-3view-geom-resume__train/checkpoints/best.ckpt
+  cond_cache_root: /data/hdd/datasets/eccv2026ws-cad-data/processed/cond_cache_v2
+  postprocess_analytic: 1
+
+jobs:
+  - id: mm-a-smoke
+    mode: train
+    args:
+      max_steps: 40
+      limit_train: 64
+      limit_val: 16
+      no_official_val: true
+      use_decoder_cross_attn: 1
+      enable_aux_surf_type: 1
+      cond_cache_root: ${defaults.cond_cache_root}
+      weight_folder: /data/hdd/outputs/AutoBrep
+      # override ar via resume-from / launcher parent if supported
+
+  - id: mm-a-train
+    mode: train
+    depends_on: [mm-a-smoke]
+    args:
+      max_epochs: 50
+      use_decoder_cross_attn: 1
+      enable_aux_surf_type: 1
+      aux_surf_type_weight: 0.1
+      cond_cache_root: ${defaults.cond_cache_root}
+      official_val_samples_mid: 24
+      official_val_epoch_frac: 0.25
+
+  - id: mm-a-gt-test
+    mode: test
+    depends_on: [mm-a-train]
+    args:
+      postprocess_analytic: 1
+      checkpoint: best
+      compare_vs:
+        - 260725-002218
+        - 260728-201614

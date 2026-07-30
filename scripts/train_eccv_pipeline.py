@@ -31,6 +31,46 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--view-num-latents", type=int, default=64)
+    p.add_argument(
+        "--use-prim-seq-encoder",
+        type=int,
+        default=1,
+        help="P1-A: PrimTransformerEncoder + soft prefix compress (1=on)",
+    )
+    p.add_argument("--prim-d-model", type=int, default=512)
+    p.add_argument("--prim-n-layers", type=int, default=4)
+    p.add_argument("--prim-max-seq", type=int, default=384)
+    p.add_argument(
+        "--use-decoder-cross-attn",
+        type=int,
+        default=1,
+        help="MM Stage A / P1-B: per-layer AR cross-attn (implies prim encoder)",
+    )
+    p.add_argument("--decoder-xattn-heads", type=int, default=8)
+    p.add_argument(
+        "--enable-aux-surf-type",
+        type=int,
+        default=1,
+        help="Stage A: surface-type CE via SurfaceTypeHead (needs surf_type_ids in batch)",
+    )
+    p.add_argument("--aux-surf-type-weight", type=float, default=0.1)
+    p.add_argument(
+        "--enable-aux-view-bbox",
+        type=int,
+        default=0,
+        help="Optional TechDraw AABB consistency aux loss",
+    )
+    p.add_argument("--aux-view-bbox-weight", type=float, default=0.1)
+    p.add_argument(
+        "--cond-cache-root",
+        default="",
+        help="If set: load images/techdraw/surf_type from processed/cond_cache_v2",
+    )
+    p.add_argument(
+        "--ar-ckpt",
+        default="",
+        help="Parent AR Lightning ckpt to freeze (default: <weight-folder>/ar.ckpt)",
+    )
     p.add_argument("--accumulate-grad-batches", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
@@ -225,6 +265,14 @@ def main() -> int:
         "limit_val_batches": args.limit_val_batches,
         "lr": args.lr,
         "view_num_latents": args.view_num_latents,
+        "use_prim_seq_encoder": bool(args.use_prim_seq_encoder),
+        "prim_d_model": args.prim_d_model,
+        "prim_n_layers": args.prim_n_layers,
+        "prim_max_seq": args.prim_max_seq,
+        "use_decoder_cross_attn": bool(getattr(args, "use_decoder_cross_attn", 0)),
+        "enable_aux_surf_type": bool(getattr(args, "enable_aux_surf_type", 1)),
+        "aux_surf_type_weight": float(getattr(args, "aux_surf_type_weight", 0.1)),
+        "cond_cache_root": str(getattr(args, "cond_cache_root", "") or ""),
         "freeze_backbone": True,
         "load_point_cloud": False,
         "loss": "AR token CE (prepend excluded)",
@@ -269,13 +317,26 @@ def main() -> int:
     data_args["num_workers"] = args.num_workers
     data_args["load_point_cloud"] = False
     data_args["scaled_unique"] = False
+    if getattr(args, "cond_cache_root", ""):
+        data_args["cond_cache_root"] = str(args.cond_cache_root)
 
     model_args = cfg["model"]["init_args"]
     model_args["lr"] = args.lr
     model_args["view_num_latents"] = args.view_num_latents
+    model_args["use_prim_seq_encoder"] = bool(args.use_prim_seq_encoder)
+    model_args["prim_d_model"] = int(args.prim_d_model)
+    model_args["prim_n_layers"] = int(args.prim_n_layers)
+    model_args["prim_max_seq"] = int(args.prim_max_seq)
+    model_args["use_decoder_cross_attn"] = bool(args.use_decoder_cross_attn)
+    model_args["decoder_xattn_heads"] = int(args.decoder_xattn_heads)
+    model_args["enable_aux_surf_type"] = bool(args.enable_aux_surf_type)
+    model_args["aux_surf_type_weight"] = float(args.aux_surf_type_weight)
+    model_args["enable_aux_view_bbox"] = bool(args.enable_aux_view_bbox)
+    model_args["aux_view_bbox_weight"] = float(args.aux_view_bbox_weight)
     model_args["surf_fsq_ckpt"] = str(weight / "surf-fsq.ckpt")
     model_args["edge_fsq_ckpt"] = str(weight / "edge-fsq.ckpt")
-    model_args["ar_ckpt"] = str(weight / "ar.ckpt")
+    ar_ckpt = str(args.ar_ckpt).strip() if getattr(args, "ar_ckpt", "") else ""
+    model_args["ar_ckpt"] = ar_ckpt or str(weight / "ar.ckpt")
     model_args["freeze_backbone"] = True
 
     from autobrep.data.eccv_data import ECCVViewDataModule
@@ -422,18 +483,7 @@ def main() -> int:
     else:
         trainer_cfg["max_epochs"] = -1
         trainer_cfg["max_steps"] = max_steps
-        # Short smoke (max_steps << default val_check_interval) must still run val
-        # so FastValMetricsCallback fires and ModelCheckpoint can see val_loss.
-        vci = int(args.val_check_interval)
-        if max_steps > 0 and vci > max_steps:
-            vci = max(1, int(max_steps))
-            print(
-                f"[train_eccv] clamp val_check_interval "
-                f"{args.val_check_interval} → {vci} (max_steps={max_steps})",
-                file=sys.stderr,
-                flush=True,
-            )
-        trainer_cfg["val_check_interval"] = vci
+        trainer_cfg["val_check_interval"] = int(args.val_check_interval)
         trainer_cfg.pop("check_val_every_n_epoch", None)
     for k in ("profiler",):
         trainer_cfg.pop(k, None)
@@ -473,52 +523,18 @@ def main() -> int:
     )
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
 
-    # Launcher treats missing checkpoints/last.ckpt as incomplete/failed.
-    # With max_steps short runs, ModelCheckpoint may never fire (no val_loss /
-    # mid-epoch stop). Always materialize last.ckpt after a successful fit.
-    last_ckpt = ckpt_dir / "last.ckpt"
-    if not last_ckpt.is_file():
-        trainer.save_checkpoint(str(last_ckpt))
-        print(
-            f"[train_eccv] wrote missing last.ckpt after fit → {last_ckpt}",
-            file=sys.stderr,
-            flush=True,
-        )
-
-    # Stable name for inference: launcher / test prefer checkpoints/best.ckpt.
-    # ModelCheckpoint saves the monitored winner under a step/val_loss filename.
-    best_src = str(getattr(ckpt_cb, "best_model_path", "") or "").strip()
-    best_link = ckpt_dir / "best.ckpt"
-    if best_src and Path(best_src).is_file():
-        if best_link.exists() or best_link.is_symlink():
-            best_link.unlink()
-        try:
-            best_link.symlink_to(Path(best_src).resolve())
-        except OSError:
-            import shutil
-
-            shutil.copy2(best_src, best_link)
-        print(
-            f"[train_eccv] best.ckpt → {best_src} (monitor=val_loss, mode=min)",
-            file=sys.stderr,
-            flush=True,
-        )
-
     summary = {
-        "best_model_path": best_src or getattr(ckpt_cb, "best_model_path", "") or "",
+        "best_model_path": getattr(ckpt_cb, "best_model_path", ""),
         "best_model_score": float(ckpt_cb.best_model_score)
         if ckpt_cb.best_model_score is not None
         else None,
-        "best_ckpt_alias": str(best_link) if best_link.exists() else "",
-        "last_model_path": str(last_ckpt) if last_ckpt.is_file() else "",
+        "last_model_path": str(ckpt_dir / "last.ckpt"),
         "peak_cuda_GB": round(torch.cuda.max_memory_allocated() / 1e9, 3),
         "max_steps": max_steps,
         "max_epochs": max_epochs,
         "schedule": schedule,
         "global_step": int(trainer.global_step),
         "current_epoch": int(trainer.current_epoch),
-        "ckpt_monitor": "val_loss",
-        "ckpt_monitor_mode": "min",
     }
     (metrics_dir / "train_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"

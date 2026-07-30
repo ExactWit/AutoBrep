@@ -862,6 +862,17 @@ class AutoBrepViewModel(AutoBrepModel):
         view_dropout: float = 0.1,
         view_dropout_max: int = 2,
         num_views: int = 3,
+        use_prim_seq_encoder: bool = False,
+        prim_d_model: int = 512,
+        prim_n_layers: int = 4,
+        prim_max_seq: int = 384,
+        use_decoder_cross_attn: bool = False,
+        decoder_xattn_heads: int = 8,
+        enable_aux_view_bbox: bool = False,
+        aux_view_bbox_weight: float = 0.1,
+        enable_aux_surf_type: bool = True,
+        aux_surf_type_weight: float = 0.1,
+        surf_type_max_faces: int = 64,
     ) -> None:
         super().__init__(
             surf_fsq_ckpt=surf_fsq_ckpt,
@@ -882,6 +893,10 @@ class AutoBrepViewModel(AutoBrepModel):
             drop_decoder=drop_decoder,
         )
 
+        # P1-B / MM-A needs prim sequence encoder for K/V memory.
+        if use_decoder_cross_attn:
+            use_prim_seq_encoder = True
+
         self.view_encoder = ViewConditionEncoder(
             dim=dim,
             hidden=view_hidden,
@@ -890,7 +905,40 @@ class AutoBrepViewModel(AutoBrepModel):
             dropout=view_dropout,
             view_dropout_max=view_dropout_max,
             pretrained_backbone=True,
+            use_prim_seq_encoder=use_prim_seq_encoder,
+            prim_d_model=prim_d_model,
+            prim_n_layers=prim_n_layers,
+            prim_max_seq=prim_max_seq,
         )
+
+        self.use_decoder_cross_attn = bool(use_decoder_cross_attn)
+        self.decoder_xattn = None
+        self.encoder_mem_proj = None
+        if self.use_decoder_cross_attn:
+            from autobrep.models.decoder_cross_attn import (
+                DecoderCrossAttnInjector,
+                EncoderMemoryProjector,
+            )
+
+            self.encoder_mem_proj = EncoderMemoryProjector(view_hidden, dim)
+            self.decoder_xattn = DecoderCrossAttnInjector(
+                self.cad_gpt.ar_decoder.net.attn_layers,
+                dim=dim,
+                n_heads=decoder_xattn_heads,
+                dropout=view_dropout,
+            )
+
+        self.enable_aux_view_bbox = bool(enable_aux_view_bbox)
+        self.aux_view_bbox_weight = float(aux_view_bbox_weight)
+        self.enable_aux_surf_type = bool(enable_aux_surf_type)
+        self.aux_surf_type_weight = float(aux_surf_type_weight)
+        self.surf_type_head = None
+        if self.enable_aux_surf_type:
+            from autobrep.models.surface_type_head import SurfaceTypeHead
+
+            self.surf_type_head = SurfaceTypeHead(
+                in_dim=dim, max_faces=int(surf_type_max_faces)
+            )
 
         if ar_ckpt and not inference_mode:
             self.load_pretrained_ar(ar_ckpt)
@@ -902,9 +950,17 @@ class AutoBrepViewModel(AutoBrepModel):
             if hasattr(self, "edge_vae"):
                 self.edge_vae.requires_grad_(False)
 
-        self.trainable_params = [
-            p for p in self.view_encoder.parameters() if p.requires_grad
-        ]
+        trainable = [p for p in self.view_encoder.parameters() if p.requires_grad]
+        if self.encoder_mem_proj is not None:
+            trainable += list(self.encoder_mem_proj.parameters())
+        if self.decoder_xattn is not None:
+            # Unfreeze only injected cross-attn (backbone stays frozen)
+            for p in self.decoder_xattn.cross_layers.parameters():
+                p.requires_grad_(True)
+            trainable += list(self.decoder_xattn.cross_layers.parameters())
+        if self.surf_type_head is not None:
+            trainable += list(self.surf_type_head.parameters())
+        self.trainable_params = trainable
         # Level-1 fast metrics on validation (PPL / token acc / light topo).
         self.enable_fast_metrics: bool = True
 
@@ -912,7 +968,9 @@ class AutoBrepViewModel(AutoBrepModel):
         n_total = sum(p.numel() for p in self.parameters())
         print(
             f"[AutoBrepViewModel] trainable={n_train/1e6:.2f}M / total={n_total/1e6:.2f}M "
-            f"(freeze_backbone={freeze_backbone})"
+            f"(freeze_backbone={freeze_backbone} "
+            f"prim_enc={use_prim_seq_encoder} xattn={self.use_decoder_cross_attn} "
+            f"surf_head={self.enable_aux_surf_type})"
         )
 
     def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
@@ -963,15 +1021,34 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes: torch.Tensor,
         prim_geom: torch.Tensor,
         prim_mask: torch.Tensor,
+        prim_group_roles: torch.Tensor | None = None,
     ) -> torch.Tensor:
         param_dtype = next(self.view_encoder.parameters()).dtype
         if images.dtype != param_dtype:
             images = images.to(dtype=param_dtype)
         if prim_geom.dtype != param_dtype and prim_geom.is_floating_point():
             prim_geom = prim_geom.to(dtype=param_dtype)
-        return self.view_encoder(
-            images, prim_types, prim_linetypes, prim_geom, prim_mask
+        prepend = self.view_encoder(
+            images,
+            prim_types,
+            prim_linetypes,
+            prim_geom,
+            prim_mask,
+            prim_group_roles=prim_group_roles,
         )
+        if self.use_decoder_cross_attn and self.decoder_xattn is not None:
+            seq, mask = self.view_encoder.encode_prim_sequence(
+                prim_types,
+                prim_linetypes,
+                prim_geom,
+                prim_mask,
+                prim_group_roles=prim_group_roles,
+            )
+            mem = self.encoder_mem_proj(seq.to(dtype=param_dtype))
+            self.decoder_xattn.set_context(mem, mask)
+        elif self.decoder_xattn is not None:
+            self.decoder_xattn.clear_context()
+        return prepend
 
     @torch.inference_mode()
     def predict_complexity_from_condition(
@@ -1037,6 +1114,7 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes = batch["prim_linetypes"]
         prim_geom = batch["prim_geom"].to(dtype=torch.bfloat16)
         prim_mask = batch["prim_mask"]
+        prim_group_roles = batch.get("prim_group_roles")
 
         with torch.no_grad():
             surf_id, edge_id = self.encode_fsq_code(face_ncs, edge_ncs)
@@ -1059,7 +1137,12 @@ class AutoBrepViewModel(AutoBrepModel):
         loss_mask = torch.stack(loss_mask).detach()
 
         prepend = self.encode_views(
-            images, prim_types, prim_linetypes, prim_geom, prim_mask
+            images,
+            prim_types,
+            prim_linetypes,
+            prim_geom,
+            prim_mask,
+            prim_group_roles=prim_group_roles,
         )
         if return_fast_metrics:
             loss, logits, target, cond_shifted = self.cad_gpt(
@@ -1077,6 +1160,7 @@ class AutoBrepViewModel(AutoBrepModel):
                 full_sequences=updated_token,
                 max_face=int(getattr(self.hparams, "max_face", 200) or 200),
             )
+            loss = self._maybe_add_aux_loss(loss, batch, prepend, prim_geom, prim_mask)
             return loss, fast
 
         loss = self.cad_gpt(
@@ -1085,7 +1169,32 @@ class AutoBrepViewModel(AutoBrepModel):
             attn_mask=None,
             prepend_embeds=prepend,
         )
+        loss = self._maybe_add_aux_loss(loss, batch, prepend, prim_geom, prim_mask)
         return loss
+
+    def _maybe_add_aux_loss(self, loss, batch, prepend, prim_geom, prim_mask):
+        if not (self.enable_aux_view_bbox or self.enable_aux_surf_type):
+            return loss
+        from autobrep.models.aux_losses import compute_aux_losses
+
+        surf_logits = None
+        if self.enable_aux_surf_type and self.surf_type_head is not None:
+            surf_logits = self.surf_type_head(prepend.float())
+        surf_targets = batch.get("surf_type_ids")
+        aux = compute_aux_losses(
+            prim_geom=prim_geom,
+            prim_mask=prim_mask,
+            enable_view_bbox=self.enable_aux_view_bbox,
+            view_bbox_weight=self.aux_view_bbox_weight,
+            surf_logits=surf_logits,
+            surf_targets=surf_targets,
+            enable_surf_type=self.enable_aux_surf_type and surf_targets is not None,
+            surf_type_weight=self.aux_surf_type_weight,
+        )
+        if self.training:
+            for k, v in aux.log_dict("train/aux").items():
+                self.log(k, v, on_step=True, on_epoch=True)
+        return loss + aux.total
 
     @torch.inference_mode()
     def generate(
@@ -1098,11 +1207,17 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes=None,
         prim_geom=None,
         prim_mask=None,
+        prim_group_roles=None,
     ):
         prepend = None
         if images is not None:
             prepend = self.encode_views(
-                images, prim_types, prim_linetypes, prim_geom, prim_mask
+                images,
+                prim_types,
+                prim_linetypes,
+                prim_geom,
+                prim_mask,
+                prim_group_roles=prim_group_roles,
             )
         # Prepend condition only on first decode step so KV cache stays valid.
         return generate_with_prepend_kv_cache(

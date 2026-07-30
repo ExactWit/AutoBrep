@@ -75,6 +75,8 @@ ENABLE_AUX_SURF_TYPE="${ENABLE_AUX_SURF_TYPE:-0}"
 AUX_SURF_TYPE_WEIGHT="${AUX_SURF_TYPE_WEIGHT:-0.1}"
 FSQ_UPGRADE="${FSQ_UPGRADE:-0}"
 POSTPROCESS_ANALYTIC="${POSTPROCESS_ANALYTIC:-1}"
+COND_CACHE_ROOT="${COND_CACHE_ROOT:-}"
+AR_CKPT="${AR_CKPT:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -141,6 +143,8 @@ while [[ $# -gt 0 ]]; do
     --aux-surf-type-weight) AUX_SURF_TYPE_WEIGHT="$2"; shift 2 ;;
     --fsq-upgrade) FSQ_UPGRADE="$2"; shift 2 ;;
     --postprocess-analytic) POSTPROCESS_ANALYTIC="$2"; shift 2 ;;
+    --cond-cache-root) COND_CACHE_ROOT="$2"; shift 2 ;;
+    --ar-ckpt) AR_CKPT="$2"; shift 2 ;;
     --) shift; break ;;
     -*) echo "[run.sh] unknown option: $1" >&2; exit 1 ;;
     *) break ;;
@@ -204,10 +208,13 @@ case "${MODE}" in
       "official_val_epoch_frac": 0.25,
       "no_official_val": false,
       "complexity": "from_condition",
-      "use_prim_seq_encoder": 0,
-      "use_decoder_cross_attn": 0,
+      "use_prim_seq_encoder": 1,
+      "use_decoder_cross_attn": 1,
       "enable_aux_view_bbox": 0,
-      "enable_aux_surf_type": 0,
+      "enable_aux_surf_type": 1,
+      "aux_surf_type_weight": 0.1,
+      "cond_cache_root": "/data/hdd/datasets/eccv2026ws-cad-data/processed/cond_cache_v2",
+      "ar_ckpt": "/data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/260723-162838/eccv-3view-geom-resume__train/checkpoints/best.ckpt",
       "fsq_upgrade": 0
     },
     "test": {
@@ -502,6 +509,12 @@ JSON
       if [[ "${ENABLE_AUX_SURF_TYPE}" == "1" ]]; then
         TRAIN_ARGS+=(--enable-aux-surf-type 1 --aux-surf-type-weight "${AUX_SURF_TYPE_WEIGHT}")
       fi
+      if [[ -n "${COND_CACHE_ROOT}" ]]; then
+        TRAIN_ARGS+=(--cond-cache-root "${COND_CACHE_ROOT}")
+      fi
+      if [[ -n "${AR_CKPT}" ]]; then
+        TRAIN_ARGS+=(--ar-ckpt "${AR_CKPT}")
+      fi
       if [[ "${FSQ_UPGRADE}" == "1" ]]; then
         TRAIN_ARGS+=(--fsq-upgrade 1)
       fi
@@ -623,7 +636,6 @@ JSON
       --top-p "${TOP_P}"
       --gen-batch "${EVAL_GEN_BATCH}"
       --eval-py "${EVAL_PY}"
-      --postprocess-analytic "${POSTPROCESS_ANALYTIC}"
     )
     if [[ -n "${DATASPLIT_ARG}" ]]; then
       EVAL_ARGS+=(--datasplit "${DATASPLIT_ARG}")

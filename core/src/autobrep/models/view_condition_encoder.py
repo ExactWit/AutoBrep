@@ -13,13 +13,17 @@ from autobrep.data.techdraw_dxf.schema import (
     NUM_PRIM_TYPES,
     NUM_TD_VIEWS,
 )
+from autobrep.models.prim_transformer_encoder import (
+    PrimTransformerEncoder,
+    SoftPrefixCompressor,
+)
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 class TechDrawSetEncoder(nn.Module):
-    """Set-Transformer over DXF/SVG primitives for one TechDraw view."""
+    """Set-Transformer over DXF/SVG primitives for one TechDraw view (P0 path)."""
 
     def __init__(
         self,
@@ -62,12 +66,6 @@ class TechDrawSetEncoder(nn.Module):
         prim_geom: torch.Tensor,
         prim_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Args:
-            prim_*: (B, N) or (B, V, N) — if 3D, encodes each view independently.
-        Returns:
-            (B, out_dim) or (B, V, out_dim)
-        """
         multi = prim_types.ndim == 3
         if multi:
             b, v, n = prim_types.shape
@@ -102,10 +100,12 @@ class TechDrawSetEncoder(nn.Module):
 
 class ViewConditionEncoder(nn.Module):
     """
-    Encode 3 RGB renders + 3 geometric TechDraw sheet views into M prefix embeddings.
+    Encode 3 RGB renders + TechDraw into M soft prefix embeddings for AR.
 
-    Renders = shading styles of the 3D part; TechDraw = 3 orthographic sheet views
-    from DXF+SVG primitives (not rasterized).
+    Modes:
+      - ``use_prim_seq_encoder=False`` (P0): per-view SetEncoder → 3 TD tokens
+      - ``use_prim_seq_encoder=True`` (P1-A): PrimTransformerEncoder (≤384) →
+        SoftPrefixCompressor (M=64) over [img tokens | prim seq]
     """
 
     def __init__(
@@ -119,13 +119,20 @@ class ViewConditionEncoder(nn.Module):
         dropout: float = 0.1,
         view_dropout_max: int = 1,
         pretrained_backbone: bool = True,
+        use_prim_seq_encoder: bool = False,
+        prim_d_model: int = 512,
+        prim_n_layers: int = 4,
+        prim_max_seq: int = 384,
+        prim_geom_bins: int = 1024,
     ):
         super().__init__()
         self.dim = dim
+        self.hidden = hidden
         self.num_latents = num_latents
         self.num_image_views = num_image_views
         self.num_td_views = num_td_views
         self.view_dropout_max = view_dropout_max
+        self.use_prim_seq_encoder = bool(use_prim_seq_encoder)
 
         weights = ResNet18_Weights.DEFAULT if pretrained_backbone else None
         backbone = resnet18(weights=weights)
@@ -136,28 +143,75 @@ class ViewConditionEncoder(nn.Module):
             nn.GELU(),
             nn.Linear(hidden, hidden),
         )
-        self.techdraw_encoder = TechDrawSetEncoder(out_dim=hidden, dropout=dropout)
-        self.td_view_embed = nn.Embedding(num_td_views, hidden)
-        self.techdraw_token = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
-        )
 
-        self.latents = nn.Parameter(torch.randn(num_latents, hidden) * 0.02)
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=hidden,
-            num_heads=num_heads,
-            dropout=dropout,
-            batch_first=True,
-        )
-        self.ff = nn.Sequential(
-            nn.LayerNorm(hidden),
-            nn.Linear(hidden, hidden * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden * 4, hidden),
-        )
+        if self.use_prim_seq_encoder:
+            # Align prim encoder out_dim with hidden so img+prim share mem space.
+            self.prim_encoder = PrimTransformerEncoder(
+                d_model=prim_d_model,
+                n_layers=prim_n_layers,
+                n_heads=max(4, prim_d_model // 64),
+                max_seq=prim_max_seq,
+                geom_bins=prim_geom_bins,
+                num_views=num_td_views,
+                dropout=dropout,
+                out_dim=hidden,
+            )
+            self.prim_compressor = SoftPrefixCompressor(
+                d_model=hidden,
+                num_latents=num_latents,
+                n_heads=num_heads,
+                dropout=dropout,
+            )
+            # Extra cross-attn fuse: latents attend to [img | compressed prim latents]
+            # Already compressed to M; we still fuse with image tokens via shared latents.
+            self.fuse_latents = nn.Parameter(torch.randn(num_latents, hidden) * 0.02)
+            self.fuse_cross_attn = nn.MultiheadAttention(
+                embed_dim=hidden,
+                num_heads=num_heads,
+                dropout=dropout,
+                batch_first=True,
+            )
+            self.fuse_ff = nn.Sequential(
+                nn.LayerNorm(hidden),
+                nn.Linear(hidden, hidden * 4),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden * 4, hidden),
+            )
+            self.techdraw_encoder = None
+            self.td_view_embed = None
+            self.techdraw_token = None
+            self.latents = None
+            self.cross_attn = None
+            self.ff = None
+        else:
+            self.prim_encoder = None
+            self.prim_compressor = None
+            self.fuse_latents = None
+            self.fuse_cross_attn = None
+            self.fuse_ff = None
+            self.techdraw_encoder = TechDrawSetEncoder(out_dim=hidden, dropout=dropout)
+            self.td_view_embed = nn.Embedding(num_td_views, hidden)
+            self.techdraw_token = nn.Sequential(
+                nn.Linear(hidden, hidden),
+                nn.GELU(),
+                nn.Linear(hidden, hidden),
+            )
+            self.latents = nn.Parameter(torch.randn(num_latents, hidden) * 0.02)
+            self.cross_attn = nn.MultiheadAttention(
+                embed_dim=hidden,
+                num_heads=num_heads,
+                dropout=dropout,
+                batch_first=True,
+            )
+            self.ff = nn.Sequential(
+                nn.LayerNorm(hidden),
+                nn.Linear(hidden, hidden * 4),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden * 4, hidden),
+            )
+
         self.proj = nn.Sequential(
             nn.LayerNorm(hidden),
             nn.Linear(hidden, dim),
@@ -185,6 +239,19 @@ class ViewConditionEncoder(nn.Module):
             out[i, idx] = 0.0
         return out
 
+    def _encode_images(self, images: torch.Tensor) -> torch.Tensor:
+        if images.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            images = images.float()
+        images = self._modality_dropout(images)
+        images = (images - self.img_mean.to(dtype=images.dtype)) / self.img_std.to(
+            dtype=images.dtype
+        )
+        b, v, c, h, w = images.shape
+        assert v == self.num_image_views, f"expected {self.num_image_views} image views, got {v}"
+        flat = images.reshape(b * v, c, h, w)
+        feats = self.backbone(flat.float()).to(dtype=images.dtype)
+        return self.img_proj(feats).reshape(b, v, -1), images
+
     def forward(
         self,
         images: torch.Tensor,
@@ -193,58 +260,117 @@ class ViewConditionEncoder(nn.Module):
         prim_geom: torch.Tensor,
         prim_mask: torch.Tensor,
         *,
+        prim_group_roles: torch.Tensor | None = None,
         drop_techdraw: bool = False,
     ) -> torch.Tensor:
         """
         Args:
-            images: (B, 3, 3, H, W) float in [0, 1] — render styles
-            prim_*: (B, V, N) / (B, V, N, G) TechDraw per sheet view
+            images: (B, 3, 3, H, W) float in [0, 1]
+            prim_*: (B, V, N) / (B, V, N, G)
+            prim_group_roles: optional (B, V, N); defaults to 0
         Returns:
             prepend_embeds: (B, M+2, dim)
         """
-        if images.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            images = images.float()
-        images = self._modality_dropout(images)
-        images = (images - self.img_mean.to(dtype=images.dtype)) / self.img_std.to(
-            dtype=images.dtype
-        )
+        img_tokens, images = self._encode_images(images)
+        b = images.shape[0]
+        dtype = images.dtype
 
-        b, v, c, h, w = images.shape
-        assert v == self.num_image_views, f"expected {self.num_image_views} image views, got {v}"
-        flat = images.reshape(b * v, c, h, w)
-        feats = self.backbone(flat.float()).to(dtype=images.dtype)
-        img_tokens = self.img_proj(feats).reshape(b, v, -1)
-
-        # Accept legacy flat (B, N) by unsqueezing to one TD view then pad.
+        # Legacy flat (B, N) → pad to V views
         if prim_types.ndim == 2:
             prim_types = prim_types.unsqueeze(1).expand(-1, self.num_td_views, -1)
             prim_linetypes = prim_linetypes.unsqueeze(1).expand(-1, self.num_td_views, -1)
             prim_geom = prim_geom.unsqueeze(1).expand(-1, self.num_td_views, -1, -1)
             prim_mask = prim_mask.unsqueeze(1)
-            # only first view keeps content for legacy
+            if prim_group_roles is not None:
+                prim_group_roles = prim_group_roles.unsqueeze(1)
             if self.num_td_views > 1:
                 prim_mask = prim_mask.repeat(1, self.num_td_views, 1)
                 prim_mask[:, 1:] = False
+                if prim_group_roles is not None:
+                    prim_group_roles = prim_group_roles.repeat(1, self.num_td_views, 1)
+                    prim_group_roles[:, 1:] = 0
 
-        td = self.techdraw_encoder(
-            prim_types, prim_linetypes, prim_geom.float(), prim_mask
-        ).to(dtype=images.dtype)  # (B, V, H)
-        if self.training and drop_techdraw is False:
-            if torch.rand((), device=images.device) < 0.1:
+        if self.use_prim_seq_encoder:
+            prim_seq, prim_seq_mask = self.prim_encoder(
+                prim_types,
+                prim_linetypes,
+                prim_geom.float(),
+                prim_mask,
+                prim_group_roles=prim_group_roles,
+            )
+            prim_seq = prim_seq.to(dtype=dtype)
+            if self.training and not drop_techdraw:
+                if torch.rand((), device=images.device) < 0.1:
+                    prim_seq = torch.zeros_like(prim_seq)
+                    prim_seq_mask = torch.zeros_like(prim_seq_mask)
+            elif drop_techdraw:
+                prim_seq = torch.zeros_like(prim_seq)
+                prim_seq_mask = torch.zeros_like(prim_seq_mask)
+
+            # Compress prim seq → M; fuse with image tokens via another cross-attn
+            key_pad = ~prim_seq_mask
+            empty = ~prim_seq_mask.any(dim=1)
+            if empty.any():
+                key_pad = key_pad.clone()
+                key_pad[empty, 0] = False
+            prim_latents = self.prim_compressor(prim_seq, key_padding_mask=key_pad)
+            mem = torch.cat([img_tokens, prim_latents], dim=1)  # (B, 3+M, H)
+            q = self.fuse_latents.unsqueeze(0).expand(b, -1, -1)
+            attn_out, _ = self.fuse_cross_attn(q, mem, mem, need_weights=False)
+            hidden = q + attn_out
+            hidden = hidden + self.fuse_ff(hidden)
+        else:
+            td = self.techdraw_encoder(
+                prim_types, prim_linetypes, prim_geom.float(), prim_mask
+            ).to(dtype=dtype)
+            if self.training and not drop_techdraw:
+                if torch.rand((), device=images.device) < 0.1:
+                    td = torch.zeros_like(td)
+            elif drop_techdraw:
                 td = torch.zeros_like(td)
-        elif drop_techdraw:
-            td = torch.zeros_like(td)
+            view_ids = torch.arange(self.num_td_views, device=images.device).view(1, -1)
+            td = td + self.td_view_embed(view_ids).to(dtype=td.dtype)
+            td_tokens = self.techdraw_token(td)
+            mem = torch.cat([img_tokens, td_tokens], dim=1)
+            latents = self.latents.unsqueeze(0).expand(b, -1, -1)
+            attn_out, _ = self.cross_attn(latents, mem, mem, need_weights=False)
+            hidden = latents + attn_out
+            hidden = hidden + self.ff(hidden)
 
-        view_ids = torch.arange(self.num_td_views, device=images.device).view(1, -1)
-        td = td + self.td_view_embed(view_ids).to(dtype=td.dtype)
-        td_tokens = self.techdraw_token(td)  # (B, V, H)
-
-        mem = torch.cat([img_tokens, td_tokens], dim=1)  # (B, 3+3, H)
-        latents = self.latents.unsqueeze(0).expand(b, -1, -1)
-        attn_out, _ = self.cross_attn(latents, mem, mem, need_weights=False)
-        hidden = latents + attn_out
-        hidden = hidden + self.ff(hidden)
         tokens = self.proj(hidden)
         bos = self.bos_view.expand(b, -1, -1)
         eos = self.eos_view.expand(b, -1, -1)
         return torch.cat([bos, tokens, eos], dim=1)
+
+    def encode_prim_sequence(
+        self,
+        prim_types: torch.Tensor,
+        prim_linetypes: torch.Tensor,
+        prim_geom: torch.Tensor,
+        prim_mask: torch.Tensor,
+        prim_group_roles: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Return raw prim encoder sequence (B, L, hidden) + mask for P1-B cross-attn.
+
+        Requires ``use_prim_seq_encoder=True``.
+        """
+        if not self.use_prim_seq_encoder or self.prim_encoder is None:
+            raise RuntimeError("encode_prim_sequence requires use_prim_seq_encoder=True")
+        if prim_types.ndim == 2:
+            prim_types = prim_types.unsqueeze(1).expand(-1, self.num_td_views, -1)
+            prim_linetypes = prim_linetypes.unsqueeze(1).expand(-1, self.num_td_views, -1)
+            prim_geom = prim_geom.unsqueeze(1).expand(-1, self.num_td_views, -1, -1)
+            prim_mask = prim_mask.unsqueeze(1)
+            if prim_group_roles is not None:
+                prim_group_roles = prim_group_roles.unsqueeze(1)
+            if self.num_td_views > 1:
+                prim_mask = prim_mask.repeat(1, self.num_td_views, 1)
+                prim_mask[:, 1:] = False
+        return self.prim_encoder(
+            prim_types,
+            prim_linetypes,
+            prim_geom.float(),
+            prim_mask,
+            prim_group_roles=prim_group_roles,
+        )
