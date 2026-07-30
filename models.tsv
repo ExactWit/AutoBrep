@@ -1,0 +1,3 @@
+id	label	repo_name	git_ref	branch	run_tag_default	status	notes
+pretrained	AutoBrep pretrained (uncond infer)	AutoBrep	base	base	pretrained	active	weight_folder=/data/hdd/outputs/AutoBrep; tag base=0e88b1b; uncond infer via run.sh
+autocomplete	AutoBrep BOGEOM autocomplete	AutoBrep	autocomplete	autocomplete	autocomplete	active	BOGEOM condition from ABC-1M face subset or JSON; uses official ar.ckpt; see docs/autocomplete.md

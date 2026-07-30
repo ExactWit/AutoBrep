@@ -79,38 +79,70 @@ class AutoRegressiveSampler(LightningModule):
         self,
         config,
         batch_size: int = 8,
+        geom_prompt_tokens: Optional[Union[torch.Tensor, List[int]]] = None,
     ):
         """
+        Args:
+            geom_prompt_tokens: Optional BOGEOM…EOGEOM token sequence (1D). When set,
+                prompts become BOS BOM GEN EOM + geom + BOC (autocomplete).
+
         Returns:
-            samples: A list of sampled tokens
+            samples: Token sequences including the prompt prefix
         """
-        if config.hyper_parameters.complexity == "random": 
+        if config.hyper_parameters.complexity == "random":
             complexity = 17
-        elif config.hyper_parameters.complexity == "easy": 
+        elif config.hyper_parameters.complexity == "easy":
             complexity = 14
-        elif config.hyper_parameters.complexity == "medium": 
+        elif config.hyper_parameters.complexity == "medium":
             complexity = 15
-        elif config.hyper_parameters.complexity == "hard": 
+        elif config.hyper_parameters.complexity == "hard":
             complexity = 16
 
-        prompt = (
-            torch.LongTensor([
-                MMTokenIndex.BOS.value, 
-                MMTokenIndex.BOM.value, 
-                complexity, 
+        device = self.transformer.device
+        if geom_prompt_tokens is not None:
+            if isinstance(geom_prompt_tokens, torch.Tensor):
+                geom = geom_prompt_tokens.detach().long().cpu().tolist()
+            else:
+                geom = [int(x) for x in geom_prompt_tokens]
+            # Drop accidental wrappers if caller passed a full prompt
+            if geom and geom[0] == MMTokenIndex.BOS.value:
+                # Expect … EOGEOM BOC or … EOGEOM; strip BOS..EOM and trailing BOC
+                if MMTokenIndex.BOGEOM.value in geom:
+                    gs = geom.index(MMTokenIndex.BOGEOM.value)
+                    ge = geom.index(MMTokenIndex.EOGEOM.value) + 1
+                    geom = geom[gs:ge]
+            prefix = [
+                MMTokenIndex.BOS.value,
+                MMTokenIndex.BOM.value,
+                complexity,
                 MMTokenIndex.EOM.value,
-                MMTokenIndex.BOC.value, 
-                ] * batch_size
+            ]
+            suffix = [MMTokenIndex.BOC.value]
+            seq = prefix + geom + suffix
+            prompt = (
+                torch.tensor([seq] * batch_size, dtype=torch.long, device=device)
             )
-            .reshape(batch_size, 5)
-            .to(self.transformer.device)
-        )
-       
+        else:
+            prompt = (
+                torch.LongTensor(
+                    [
+                        MMTokenIndex.BOS.value,
+                        MMTokenIndex.BOM.value,
+                        complexity,
+                        MMTokenIndex.EOM.value,
+                        MMTokenIndex.BOC.value,
+                    ]
+                    * batch_size
+                )
+                .reshape(batch_size, 5)
+                .to(device)
+            )
+
         with timer(f"Total Time to generate B-Reps: %s seconds"):
             samples = self.transformer.generate(
-                prompt, 
-                config.hyper_parameters.temperature, 
-                config.hyper_parameters.sample_method.top_p_threshold
+                prompt,
+                config.hyper_parameters.temperature,
+                config.hyper_parameters.sample_method.top_p_threshold,
             )
 
         return torch.concat([prompt, samples], -1)
@@ -506,7 +538,12 @@ class AutoBrepModel(BrepBase):
                     continue
         
                 edges = face[11:]
-                edges_valid = edges[edges >= flag_pad + id_pad].reshape(-1, 8)
+                edges_keep = edges[edges >= flag_pad + id_pad]
+                # Truncate trailing junk so zero-shot / malformed tails don't crash decode
+                n_edge = len(edges_keep) // 8
+                if n_edge == 0:
+                    continue
+                edges_valid = edges_keep[: n_edge * 8].reshape(-1, 8)
                 edge_pos = np.stack([x[0:6] - flag_pad - id_pad for x in edges_valid])
                 code_edges = np.stack(
                     [
@@ -523,6 +560,11 @@ class AutoBrepModel(BrepBase):
                     (edges == MMTokenIndex.DUMMYID.value) | 
                     np.logical_and(edges >= flag_pad, edges < flag_pad + id_pad)
                 ]
+                # Align prev_face ids with truncated edge count
+                if len(prev_faces) > n_edge:
+                    prev_faces = prev_faces[:n_edge]
+                elif len(prev_faces) < n_edge:
+                    continue
 
                 # Make sure to skip dummy edges in user input
                 for prev_face, pos, code in zip(prev_faces, edge_pos, code_edges):
