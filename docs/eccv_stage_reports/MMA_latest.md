@@ -1,6 +1,6 @@
 # MMA — Stage A 条件对齐
 
-> **所指 tip：** `feat/cond-mm-stage-a` @ `334f7f5` · entry `eccv-3view-mm-a`  
+> **所指 tip：** `feat/cond-mm-stage-a` @ `f6d48d0` · entry `eccv-3view-mm-a`  
 > **文档源：** `main`/`docs/eccv_stage_reports/`  
 > **路线：** [COND_MM_ROADMAP.md](./COND_MM_ROADMAP.md)
 
@@ -16,9 +16,11 @@
 
 - [x] cache v2 manifest 完成（train/val/test；parquet 子集 7152）
 - [x] R_smoke（本地 8 step，`stage_gates/mma_smoke`，train_loss↓，通路 OK）
-- [x] Stage A 正式训 **RUNNING**: `260730-173100/mma-stage-a__train (bs=1, accum=4)`（50ep，cond_cache_v2，xattn+surf）
+- [x] Stage A 正式训 **RUNNING** via **exp_launcher**：`jid=ac395002` · `260730-174645/mma-stage-a__train`（bs=1, accum=4, 50ep；cond_cache_v2；xattn+surf）
 - [ ] GT test（best + analytic）
 - [ ] 对照 R1 / 旧基线后硬门禁判定
+
+> 已废弃并删除的 nohup 跑：`260730-172526` / `260730-173000` / `260730-173100`（未走 launcher）。
 
 ## Smoke 备忘
 
@@ -39,14 +41,15 @@
 
 ## Job 启动（正式训）
 
-```bash
-# preprocess cache（若尚未跑）
-BUILD_COND_CACHE=1 ./run.sh preprocess --data-dir /data/hdd/datasets/eccv2026ws-cad-data --num-workers 8
+**必须经 exp_launcher**（禁止 nohup / 直接 `./run.sh train`）：
 
-# launcher: entry eccv-3view-mm-a，或：
-./run.sh train --exp-dir <out> --dataset eccv2026ws-cad-data \
-  --use-decoder-cross-attn 1 --enable-aux-surf-type 1 \
-  --cond-cache-root /data/hdd/datasets/eccv2026ws-cad-data/processed/cond_cache_v2 \
-  --ar-ckpt /data/hdd/exps/runs/eccv2026ws-cad-data/gen/AutoBrep/260723-162838/eccv-3view-geom-resume__train/checkpoints/best.ckpt \
-  --max-epochs 50
+```bash
+# Web: entry eccv-3view-mm-a → train
+# 或 API / CLI；默认已含 bs=1 accum=4、cond_cache_v2、ar_ckpt、xattn、surf-type
+conda activate launcher
+# 查状态
+exp_launcher jobs show ac395002 --json
 ```
+
+tmux: `exp-AutoBrep-mma-stage-a-260730-174645-train`  
+log: `.../260730-174645/mma-stage-a__train/logs/out.log`
