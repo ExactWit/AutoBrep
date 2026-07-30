@@ -16,7 +16,7 @@
 
 - [x] cache v2 manifest 完成（train/val/test；parquet 子集 7152）
 - [x] R_smoke（本地 8 step，`stage_gates/mma_smoke`，train_loss↓，通路 OK）
-- [ ] Stage A 正式训（launcher entry `eccv-3view-mm-a` / workflow `workflows/eccv_mm_stage_a.yaml`）
+- [x] Stage A 正式训 **RUNNING**: `260730-172526/mma-stage-a__train`（50ep，cond_cache_v2，xattn+surf）
 - [ ] GT test（best + analytic）
 - [ ] 对照 R1 / 旧基线后硬门禁判定
 
