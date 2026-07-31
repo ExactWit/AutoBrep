@@ -46,6 +46,19 @@ def parse_args() -> argparse.Namespace:
         choices=["direct", "compress"],
         help="direct: 1 token per prim into prepend (no compressor); compress: P1-A style",
     )
+    p.add_argument(
+        "--use-topo-sketch",
+        type=int,
+        default=0,
+        help="Prepend loop-group topology sketch tokens (skeleton scaffold)",
+    )
+    p.add_argument("--topo-sketch-max", type=int, default=64)
+    p.add_argument(
+        "--topo-count-weight",
+        type=float,
+        default=0.0,
+        help="Aux face/edge cardinality loss weight (0=off)",
+    )
     p.add_argument("--accumulate-grad-batches", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
@@ -245,6 +258,9 @@ def main() -> int:
         "prim_n_layers": args.prim_n_layers,
         "prim_max_seq": args.prim_max_seq,
         "prim_prefix_mode": str(args.prim_prefix_mode),
+        "use_topo_sketch": bool(args.use_topo_sketch),
+        "topo_sketch_max": int(args.topo_sketch_max),
+        "topo_count_weight": float(args.topo_count_weight),
         "freeze_backbone": True,
         "load_point_cloud": False,
         "loss": "AR token CE (prepend excluded)",
@@ -298,6 +314,9 @@ def main() -> int:
     model_args["prim_n_layers"] = int(args.prim_n_layers)
     model_args["prim_max_seq"] = int(args.prim_max_seq)
     model_args["prim_prefix_mode"] = str(args.prim_prefix_mode)
+    model_args["use_topo_sketch"] = bool(args.use_topo_sketch)
+    model_args["topo_sketch_max"] = int(args.topo_sketch_max)
+    model_args["topo_count_weight"] = float(args.topo_count_weight)
     model_args["surf_fsq_ckpt"] = str(weight / "surf-fsq.ckpt")
     model_args["edge_fsq_ckpt"] = str(weight / "edge-fsq.ckpt")
     model_args["ar_ckpt"] = str(weight / "ar.ckpt")

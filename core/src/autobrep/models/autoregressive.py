@@ -867,6 +867,9 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_n_layers: int = 4,
         prim_max_seq: int = 384,
         prim_prefix_mode: str = "compress",
+        use_topo_sketch: bool = False,
+        topo_sketch_max: int = 64,
+        topo_count_weight: float = 0.0,
     ) -> None:
         super().__init__(
             surf_fsq_ckpt=surf_fsq_ckpt,
@@ -900,7 +903,10 @@ class AutoBrepViewModel(AutoBrepModel):
             prim_n_layers=prim_n_layers,
             prim_max_seq=prim_max_seq,
             prim_prefix_mode=prim_prefix_mode,
+            use_topo_sketch=use_topo_sketch,
+            topo_sketch_max=topo_sketch_max,
         )
+        self.topo_count_weight = float(topo_count_weight)
 
         if ar_ckpt and not inference_mode:
             self.load_pretrained_ar(ar_ckpt)
@@ -957,6 +963,7 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes: torch.Tensor,
         prim_geom: torch.Tensor,
         prim_mask: torch.Tensor,
+        prim_group_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         param_dtype = next(self.view_encoder.parameters()).dtype
         if images.dtype != param_dtype:
@@ -964,7 +971,8 @@ class AutoBrepViewModel(AutoBrepModel):
         if prim_geom.dtype != param_dtype and prim_geom.is_floating_point():
             prim_geom = prim_geom.to(dtype=param_dtype)
         return self.view_encoder(
-            images, prim_types, prim_linetypes, prim_geom, prim_mask
+            images, prim_types, prim_linetypes, prim_geom, prim_mask,
+            prim_group_ids=prim_group_ids,
         )
 
     @torch.inference_mode()
@@ -1029,6 +1037,7 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes = batch["prim_linetypes"]
         prim_geom = batch["prim_geom"].to(dtype=torch.bfloat16)
         prim_mask = batch["prim_mask"]
+        prim_group_ids = batch.get("prim_group_ids")
 
         with torch.no_grad():
             surf_id, edge_id = self.encode_fsq_code(face_ncs, edge_ncs)
@@ -1051,7 +1060,8 @@ class AutoBrepViewModel(AutoBrepModel):
         loss_mask = torch.stack(loss_mask).detach()
 
         prepend = self.encode_views(
-            images, prim_types, prim_linetypes, prim_geom, prim_mask
+            images, prim_types, prim_linetypes, prim_geom, prim_mask,
+            prim_group_ids=prim_group_ids,
         )
         loss = self.cad_gpt(
             updated_token,
@@ -1059,6 +1069,25 @@ class AutoBrepViewModel(AutoBrepModel):
             attn_mask=None,
             prepend_embeds=prepend,
         )
+        if self.topo_count_weight > 0 and self.view_encoder.topo_count_head is not None:
+            sketch_pack = self.view_encoder.get_topo_sketch()
+            if sketch_pack is not None and "num_faces" in batch and "num_edges" in batch:
+                sketch, sketch_mask = sketch_pack
+                if sketch_mask.any():
+                    pooled = (
+                        sketch * sketch_mask.unsqueeze(-1).to(sketch.dtype)
+                    ).sum(1) / sketch_mask.sum(1, keepdim=True).clamp(min=1).to(sketch.dtype)
+                    pred = self.view_encoder.topo_count_head(pooled)  # (B,2)
+                    tgt = torch.stack(
+                        [
+                            torch.log1p(batch["num_faces"].float()),
+                            torch.log1p(batch["num_edges"].float()),
+                        ],
+                        dim=1,
+                    ).to(pred.dtype)
+                    aux = torch.nn.functional.smooth_l1_loss(pred, tgt)
+                    self.log("train_topo_count_loss", aux, prog_bar=False, on_step=True, on_epoch=True)
+                    loss = loss + self.topo_count_weight * aux
         return loss
 
     @torch.inference_mode()

@@ -68,6 +68,9 @@ PRIM_D_MODEL="${PRIM_D_MODEL:-512}"
 PRIM_N_LAYERS="${PRIM_N_LAYERS:-4}"
 PRIM_MAX_SEQ="${PRIM_MAX_SEQ:-384}"
 PRIM_PREFIX_MODE="${PRIM_PREFIX_MODE:-direct}"
+USE_TOPO_SKETCH="${USE_TOPO_SKETCH:-0}"
+TOPO_SKETCH_MAX="${TOPO_SKETCH_MAX:-64}"
+TOPO_COUNT_WEIGHT="${TOPO_COUNT_WEIGHT:-0}"
 USE_DECODER_CROSS_ATTN="${USE_DECODER_CROSS_ATTN:-}"
 DECODER_XATTN_HEADS="${DECODER_XATTN_HEADS:-8}"
 ENABLE_AUX_VIEW_BBOX="${ENABLE_AUX_VIEW_BBOX:-0}"
@@ -135,6 +138,9 @@ while [[ $# -gt 0 ]]; do
     --prim-n-layers) PRIM_N_LAYERS="$2"; shift 2 ;;
     --prim-max-seq) PRIM_MAX_SEQ="$2"; shift 2 ;;
     --prim-prefix-mode) PRIM_PREFIX_MODE="$2"; shift 2 ;;
+    --use-topo-sketch) USE_TOPO_SKETCH="$2"; shift 2 ;;
+    --topo-sketch-max) TOPO_SKETCH_MAX="$2"; shift 2 ;;
+    --topo-count-weight) TOPO_COUNT_WEIGHT="$2"; shift 2 ;;
     --use-decoder-cross-attn) USE_DECODER_CROSS_ATTN="$2"; shift 2 ;;
     --decoder-xattn-heads) DECODER_XATTN_HEADS="$2"; shift 2 ;;
     --enable-aux-view-bbox) ENABLE_AUX_VIEW_BBOX="$2"; shift 2 ;;
@@ -208,6 +214,9 @@ case "${MODE}" in
       "complexity": "from_condition",
       "use_prim_seq_encoder": 1,
       "prim_prefix_mode": "direct",
+      "use_topo_sketch": 1,
+      "topo_sketch_max": 64,
+      "topo_count_weight": 0.1,
       "use_decoder_cross_attn": 0,
       "enable_aux_view_bbox": 0,
       "enable_aux_surf_type": 0,
@@ -286,6 +295,9 @@ case "${MODE}" in
       "--prim-n-layers",
       "--prim-max-seq",
       "--prim-prefix-mode",
+      "--use-topo-sketch",
+      "--topo-sketch-max",
+      "--topo-count-weight",
       "--use-decoder-cross-attn",
       "--decoder-xattn-heads",
       "--enable-aux-view-bbox",
@@ -494,6 +506,13 @@ JSON
           --prim-max-seq "${PRIM_MAX_SEQ}"
           --prim-prefix-mode "${PRIM_PREFIX_MODE}"
         )
+        if [[ "${USE_TOPO_SKETCH}" == "1" ]]; then
+          TRAIN_ARGS+=(
+            --use-topo-sketch 1
+            --topo-sketch-max "${TOPO_SKETCH_MAX}"
+            --topo-count-weight "${TOPO_COUNT_WEIGHT}"
+          )
+        fi
       fi
       if [[ "${USE_DECODER_CROSS_ATTN}" == "1" ]]; then
         TRAIN_ARGS+=(

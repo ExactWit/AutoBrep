@@ -215,6 +215,9 @@ class ECCVViewDataModule(ARDataModule):
         output.update(dxf)
         sid = row.get("sample_id") or row.get("stem") or ""
         output["sample_id"] = str(sid)
+        # GT cardinality for topology aux head (0 when unavailable).
+        output["num_faces"] = int(row.get("num_faces") or 0)
+        output["num_edges"] = int(row.get("num_edges") or 0)
         return output
 
     @property
@@ -227,4 +230,6 @@ class ECCVViewDataModule(ARDataModule):
         output["prim_mask"] = torch.bool
         output["prim_group_ids"] = torch.int64
         output["prim_group_roles"] = torch.int64
+        output["num_faces"] = torch.int64
+        output["num_edges"] = torch.int64
         return output

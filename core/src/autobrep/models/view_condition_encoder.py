@@ -16,6 +16,7 @@ from autobrep.data.techdraw_dxf.schema import (
 from autobrep.models.prim_transformer_encoder import (
     PrimTransformerEncoder,
     SoftPrefixCompressor,
+    TopoSketchEncoder,
 )
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -125,6 +126,8 @@ class ViewConditionEncoder(nn.Module):
         prim_max_seq: int = 384,
         prim_geom_bins: int = 1024,
         prim_prefix_mode: str = "compress",
+        use_topo_sketch: bool = False,
+        topo_sketch_max: int = 64,
     ):
         super().__init__()
         self.dim = dim
@@ -137,6 +140,8 @@ class ViewConditionEncoder(nn.Module):
         self.prim_prefix_mode = str(prim_prefix_mode)
         if self.prim_prefix_mode not in ("compress", "direct"):
             raise ValueError(f"unknown prim_prefix_mode: {prim_prefix_mode}")
+        self.use_topo_sketch = bool(use_topo_sketch)
+        self.topo_sketch_max = int(topo_sketch_max)
 
         weights = ResNet18_Weights.DEFAULT if pretrained_backbone else None
         backbone = resnet18(weights=weights)
@@ -216,6 +221,26 @@ class ViewConditionEncoder(nn.Module):
                 nn.Linear(hidden * 4, hidden),
             )
 
+        # Topology sketch branch (loop-group → coarse skeleton scaffold tokens).
+        if self.use_topo_sketch:
+            self.topo_encoder = TopoSketchEncoder(
+                d_model=hidden,
+                out_dim=dim,
+                max_sketch=topo_sketch_max,
+                num_views=num_td_views,
+                dropout=dropout,
+            )
+            # Aux cardinality head: predict log-count of faces & edges from sketch.
+            self.topo_count_head = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, dim // 2),
+                nn.GELU(),
+                nn.Linear(dim // 2, 2),
+            )
+        else:
+            self.topo_encoder = None
+            self.topo_count_head = None
+
         self.proj = nn.Sequential(
             nn.LayerNorm(hidden),
             nn.Linear(hidden, dim),
@@ -265,6 +290,7 @@ class ViewConditionEncoder(nn.Module):
         prim_mask: torch.Tensor,
         *,
         prim_group_roles: torch.Tensor | None = None,
+        prim_group_ids: torch.Tensor | None = None,
         drop_techdraw: bool = False,
     ) -> torch.Tensor:
         """
@@ -272,8 +298,9 @@ class ViewConditionEncoder(nn.Module):
             images: (B, 3, 3, H, W) float in [0, 1]
             prim_*: (B, V, N) / (B, V, N, G)
             prim_group_roles: optional (B, V, N); defaults to 0
+            prim_group_ids: optional (B, V, N); >0 marks loop membership
         Returns:
-            prepend_embeds: (B, M+2, dim)
+            prepend_embeds: (B, [S+]M+2, dim); topo sketch prepended when enabled
         """
         img_tokens, images = self._encode_images(images)
         b = images.shape[0]
@@ -293,6 +320,9 @@ class ViewConditionEncoder(nn.Module):
                 if prim_group_roles is not None:
                     prim_group_roles = prim_group_roles.repeat(1, self.num_td_views, 1)
                     prim_group_roles[:, 1:] = 0
+                if prim_group_ids is not None:
+                    prim_group_ids = prim_group_ids.repeat(1, self.num_td_views, 1)
+                    prim_group_ids[:, 1:] = 0
 
         if self.use_prim_seq_encoder:
             prim_seq, prim_seq_mask = self.prim_encoder(
@@ -357,4 +387,25 @@ class ViewConditionEncoder(nn.Module):
         tokens = self.proj(hidden)
         bos = self.bos_view.expand(b, -1, -1)
         eos = self.eos_view.expand(b, -1, -1)
-        return torch.cat([bos, tokens, eos], dim=1)
+        prefix = torch.cat([bos, tokens, eos], dim=1)
+
+        if self.use_topo_sketch and self.topo_encoder is not None:
+            sketch, sketch_mask = self.topo_encoder(
+                prim_types,
+                prim_linetypes,
+                prim_geom.float(),
+                prim_mask,
+                prim_group_ids=prim_group_ids,
+                prim_group_roles=prim_group_roles,
+            )
+            sketch = sketch.to(dtype=dtype)
+            self._last_topo_sketch = (sketch, sketch_mask)
+            # Topology scaffold goes FIRST so AR attends it before geometry.
+            prefix = torch.cat([sketch, prefix], dim=1)
+        else:
+            self._last_topo_sketch = None
+        return prefix
+
+    def get_topo_sketch(self):
+        """Return (sketch, mask) from the last forward (keeps grad for aux loss)."""
+        return self._last_topo_sketch

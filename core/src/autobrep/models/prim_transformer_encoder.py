@@ -228,4 +228,133 @@ class SoftPrefixCompressor(nn.Module):
         return h + self.ff(h)
 
 
-__all__ = ["PrimTransformerEncoder", "SoftPrefixCompressor", "quantize_geom"]
+class TopoSketchEncoder(nn.Module):
+    """
+    Aggregate TechDraw loop groups into topology-sketch tokens (one per loop).
+
+    Input is the raw per-view primitive set (B, V, N, ...). Primitives sharing a
+    positive ``prim_group_id`` (and the same view) belong to the same loop /
+    contour. Isolated primitives (group_id == 0, role == isolated) are emitted
+    as singleton tokens so the sketch length reflects the topological entity
+    count (loops + isolated contours ≈ face/edge skeleton cardinality).
+
+    Each sketch token = role_embed + view_embed + MLP(type_hist ∥ log_size ∥
+    closed_frac). No cross-attention: pure mean-pool aggregation so it cannot
+    perturb the frozen AR prior beyond providing a coarse scaffold.
+    """
+
+    def __init__(
+        self,
+        d_model: int = 512,
+        out_dim: int | None = None,
+        max_sketch: int = 64,
+        num_views: int = NUM_TD_VIEWS,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.out_dim = out_dim or d_model
+        self.max_sketch = max_sketch
+        self.num_views = num_views
+
+        self.role_embed = nn.Embedding(NUM_GROUP_ROLES, d_model)
+        self.view_embed = nn.Embedding(num_views, d_model)
+        feat_dim = NUM_PRIM_TYPES + 2  # type histogram ∥ log size ∥ closed frac
+        self.feat_proj = nn.Sequential(
+            nn.Linear(feat_dim, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+        )
+        self.drop = nn.Dropout(dropout)
+        self.out_proj = (
+            nn.Identity()
+            if self.out_dim == d_model
+            else nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, self.out_dim))
+        )
+
+    def forward(
+        self,
+        prim_types: torch.Tensor,
+        prim_linetypes: torch.Tensor,
+        prim_geom: torch.Tensor,
+        prim_mask: torch.Tensor,
+        prim_group_ids: torch.Tensor | None = None,
+        prim_group_roles: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            prim_*: (B, V, N) / (B, V, N, G)
+            prim_group_ids: (B, V, N) int; >0 marks loop membership
+        Returns:
+            tokens: (B, S≤max_sketch, out_dim)
+            mask: (B, S) True = valid sketch token
+        """
+        if prim_types.ndim == 2:
+            prim_types = prim_types.unsqueeze(1)
+            prim_linetypes = prim_linetypes.unsqueeze(1)
+            prim_geom = prim_geom.unsqueeze(1)
+            prim_mask = prim_mask.unsqueeze(1)
+            if prim_group_ids is not None:
+                prim_group_ids = prim_group_ids.unsqueeze(1)
+            if prim_group_roles is not None:
+                prim_group_roles = prim_group_roles.unsqueeze(1)
+
+        b, v, n = prim_types.shape
+        device = prim_types.device
+        if prim_group_ids is None:
+            prim_group_ids = torch.zeros_like(prim_types)
+        if prim_group_roles is None:
+            prim_group_roles = torch.zeros_like(prim_types)
+
+        out_tokens = torch.zeros(b, self.max_sketch, self.d_model, device=device)
+        out_mask = torch.zeros(b, self.max_sketch, dtype=torch.bool, device=device)
+
+        type_eye = torch.eye(NUM_PRIM_TYPES, device=device)
+        for i in range(b):
+            slots: list[tuple[int, int, torch.Tensor]] = []  # (role, view, member idx)
+            seen: dict[tuple[int, int], int] = {}
+            for vi in range(v):
+                valid = prim_mask[i, vi].nonzero(as_tuple=False).flatten()
+                if valid.numel() == 0:
+                    continue
+                for idx in valid.tolist():
+                    gid = int(prim_group_ids[i, vi, idx].item())
+                    role = int(prim_group_roles[i, vi, idx].item())
+                    if gid > 0:
+                        key = (vi, gid)
+                        if key not in seen:
+                            seen[key] = len(slots)
+                            slots.append((role, vi, []))
+                        slots[seen[key]][2].append(idx)
+                    else:
+                        slots.append((role, vi, [idx]))
+            if not slots:
+                continue
+            take = slots[: self.max_sketch]
+            for s, (role, vi, members) in enumerate(take):
+                mem = torch.tensor(members, device=device, dtype=torch.long)
+                types = prim_types[i, vi, mem].clamp(0, NUM_PRIM_TYPES - 1)
+                hist = type_eye[types].mean(dim=0)
+                size = torch.log1p(torch.tensor(float(len(members)), device=device))
+                closed = (
+                    (prim_group_ids[i, vi, mem] > 0).float().mean()
+                )
+                feat = torch.cat([hist, size.view(1), closed.view(1)])
+                tok = (
+                    self.role_embed(torch.tensor(role, device=device).clamp(0, NUM_GROUP_ROLES - 1))
+                    + self.view_embed(torch.tensor(vi, device=device).clamp(0, self.num_views - 1))
+                    + self.feat_proj(feat)
+                )
+                out_tokens[i, s] = tok
+                out_mask[i, s] = True
+
+        out_tokens = self.drop(out_tokens)
+        out_tokens = self.out_proj(out_tokens)
+        empty = ~out_mask.any(dim=1)
+        if empty.any():
+            out_tokens = out_tokens.clone()
+            out_tokens[empty] = 0.0
+        return out_tokens, out_mask
+
+
+__all__ = ["PrimTransformerEncoder", "SoftPrefixCompressor", "TopoSketchEncoder", "quantize_geom"]
