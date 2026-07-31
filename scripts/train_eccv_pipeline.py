@@ -31,6 +31,21 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--view-num-latents", type=int, default=64)
+    p.add_argument(
+        "--use-prim-seq-encoder",
+        type=int,
+        default=1,
+        help="Per-prim PrimTransformerEncoder (1=on)",
+    )
+    p.add_argument("--prim-d-model", type=int, default=512)
+    p.add_argument("--prim-n-layers", type=int, default=4)
+    p.add_argument("--prim-max-seq", type=int, default=384)
+    p.add_argument(
+        "--prim-prefix-mode",
+        default="direct",
+        choices=["direct", "compress"],
+        help="direct: 1 token per prim into prepend (no compressor); compress: P1-A style",
+    )
     p.add_argument("--accumulate-grad-batches", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
@@ -225,6 +240,11 @@ def main() -> int:
         "limit_val_batches": args.limit_val_batches,
         "lr": args.lr,
         "view_num_latents": args.view_num_latents,
+        "use_prim_seq_encoder": bool(args.use_prim_seq_encoder),
+        "prim_d_model": args.prim_d_model,
+        "prim_n_layers": args.prim_n_layers,
+        "prim_max_seq": args.prim_max_seq,
+        "prim_prefix_mode": str(args.prim_prefix_mode),
         "freeze_backbone": True,
         "load_point_cloud": False,
         "loss": "AR token CE (prepend excluded)",
@@ -273,6 +293,11 @@ def main() -> int:
     model_args = cfg["model"]["init_args"]
     model_args["lr"] = args.lr
     model_args["view_num_latents"] = args.view_num_latents
+    model_args["use_prim_seq_encoder"] = bool(args.use_prim_seq_encoder)
+    model_args["prim_d_model"] = int(args.prim_d_model)
+    model_args["prim_n_layers"] = int(args.prim_n_layers)
+    model_args["prim_max_seq"] = int(args.prim_max_seq)
+    model_args["prim_prefix_mode"] = str(args.prim_prefix_mode)
     model_args["surf_fsq_ckpt"] = str(weight / "surf-fsq.ckpt")
     model_args["edge_fsq_ckpt"] = str(weight / "edge-fsq.ckpt")
     model_args["ar_ckpt"] = str(weight / "ar.ckpt")

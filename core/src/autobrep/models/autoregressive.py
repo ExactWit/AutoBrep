@@ -862,6 +862,11 @@ class AutoBrepViewModel(AutoBrepModel):
         view_dropout: float = 0.1,
         view_dropout_max: int = 2,
         num_views: int = 3,
+        use_prim_seq_encoder: bool = False,
+        prim_d_model: int = 512,
+        prim_n_layers: int = 4,
+        prim_max_seq: int = 384,
+        prim_prefix_mode: str = "compress",
     ) -> None:
         super().__init__(
             surf_fsq_ckpt=surf_fsq_ckpt,
@@ -890,6 +895,11 @@ class AutoBrepViewModel(AutoBrepModel):
             dropout=view_dropout,
             view_dropout_max=view_dropout_max,
             pretrained_backbone=True,
+            use_prim_seq_encoder=use_prim_seq_encoder,
+            prim_d_model=prim_d_model,
+            prim_n_layers=prim_n_layers,
+            prim_max_seq=prim_max_seq,
+            prim_prefix_mode=prim_prefix_mode,
         )
 
         if ar_ckpt and not inference_mode:
