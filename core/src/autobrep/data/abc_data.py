@@ -177,7 +177,7 @@ class BaseDataModule(abc.ABC, LightningDataModule):
         num_workers: int = 0,        # add: standard torch DataLoader parallelism
         pin_memory: bool = True,     # add: common perf toggle
         persistent_workers: bool = False,  # add: common perf toggle
-        dataloader_mp_context: str = "spawn",  # worker start method; spawn avoids CUDA-fork SegFaults
+        dataloader_mp_context: str = "fork",  # worker start method; fork keeps CUDA-tensor eval path working
         rows_per_arrow_batch: int = 4096,  # add: scanner batch size
     ):
         super().__init__()
