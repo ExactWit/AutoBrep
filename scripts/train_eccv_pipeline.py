@@ -446,6 +446,8 @@ def main() -> int:
             "logger": logger,
             "accumulate_grad_batches": args.accumulate_grad_batches,
             "limit_val_batches": int(args.limit_val_batches),
+            # Use spawn for DataLoader workers: forking after CUDA init causes
+            # intermittent worker SegFaults (MMA ep42 / topo ep5 crashes).
             "callbacks": [
                 ckpt_cb,
                 LearningRateMonitor(logging_interval="step"),

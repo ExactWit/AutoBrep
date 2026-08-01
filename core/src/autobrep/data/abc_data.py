@@ -177,6 +177,7 @@ class BaseDataModule(abc.ABC, LightningDataModule):
         num_workers: int = 0,        # add: standard torch DataLoader parallelism
         pin_memory: bool = True,     # add: common perf toggle
         persistent_workers: bool = False,  # add: common perf toggle
+        dataloader_mp_context: str = "spawn",  # worker start method; spawn avoids CUDA-fork SegFaults
         rows_per_arrow_batch: int = 4096,  # add: scanner batch size
     ):
         super().__init__()
@@ -296,6 +297,12 @@ class BaseDataModule(abc.ABC, LightningDataModule):
             "persistent_workers": bool(self.hparams.persistent_workers) and self.hparams.num_workers > 0,
             "prefetch_factor": prefetch_factor,
             "collate_fn": getattr(self, "collate_fn", None),
+            # spawn avoids CUDA-fork worker SegFaults (only used when num_workers>0)
+            "multiprocessing_context": (
+                self.hparams.dataloader_mp_context
+                if self.hparams.num_workers and self.hparams.num_workers > 0
+                else None
+            ),
         }
 
     def train_dataloader(self) -> DataLoader:
