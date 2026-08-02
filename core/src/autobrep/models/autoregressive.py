@@ -113,6 +113,7 @@ class AutoRegressiveSampler(LightningModule):
         prim_linetypes: Optional[torch.Tensor] = None,
         prim_geom: Optional[torch.Tensor] = None,
         prim_mask: Optional[torch.Tensor] = None,
+        prim_group_ids: Optional[torch.Tensor] = None,
     ):
         """
         Returns:
@@ -136,6 +137,10 @@ class AutoRegressiveSampler(LightningModule):
                 device=self.transformer.device, dtype=torch.float16
             )
             gen_kwargs["prim_mask"] = prim_mask.to(device=self.transformer.device)
+            if prim_group_ids is not None:
+                gen_kwargs["prim_group_ids"] = prim_group_ids.to(
+                    device=self.transformer.device
+                )
         elif self.pc_conditioned:
             if point_cloud is None:
                 raise ValueError("pc_conditioned sampler requires point_cloud (B,N,3)")
@@ -151,6 +156,7 @@ class AutoRegressiveSampler(LightningModule):
             # Per-sample AR next-token among {easy,mid,hard} given view+DXF prepend.
             cx_ids = []
             for b in range(batch_size):
+                gid = gen_kwargs.get("prim_group_ids")
                 c = int(
                     self.transformer.predict_complexity_from_condition(
                         images=gen_kwargs["images"][b : b + 1],
@@ -158,6 +164,7 @@ class AutoRegressiveSampler(LightningModule):
                         prim_linetypes=gen_kwargs["prim_linetypes"][b : b + 1],
                         prim_geom=gen_kwargs["prim_geom"][b : b + 1],
                         prim_mask=gen_kwargs["prim_mask"][b : b + 1],
+                        prim_group_ids=(gid[b : b + 1] if gid is not None else None),
                     )
                 )
                 cx_ids.append(c)
@@ -983,6 +990,7 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes: torch.Tensor,
         prim_geom: torch.Tensor,
         prim_mask: torch.Tensor,
+        prim_group_ids: torch.Tensor | None = None,
         *,
         allow_uncond: bool = False,
     ) -> "int | list[int]":
@@ -996,7 +1004,8 @@ class AutoBrepViewModel(AutoBrepModel):
         """
         device = next(self.parameters()).device
         prepend = self.encode_views(
-            images, prim_types, prim_linetypes, prim_geom, prim_mask
+            images, prim_types, prim_linetypes, prim_geom, prim_mask,
+            prim_group_ids=prim_group_ids,
         )
         seed = torch.tensor(
             [[MMTokenIndex.BOS.value, MMTokenIndex.BOM.value]],
@@ -1101,11 +1110,13 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_linetypes=None,
         prim_geom=None,
         prim_mask=None,
+        prim_group_ids=None,
     ):
         prepend = None
         if images is not None:
             prepend = self.encode_views(
-                images, prim_types, prim_linetypes, prim_geom, prim_mask
+                images, prim_types, prim_linetypes, prim_geom, prim_mask,
+                prim_group_ids=prim_group_ids,
             )
         # Prepend condition only on first decode step so KV cache stays valid.
         return generate_with_prepend_kv_cache(

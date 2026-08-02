@@ -88,6 +88,7 @@ def resolve_complexity_id(
     prim_linetypes: torch.Tensor | None = None,
     prim_geom: torch.Tensor | None = None,
     prim_mask: torch.Tensor | None = None,
+    prim_group_ids: torch.Tensor | None = None,
 ) -> tuple[list[int], list[str]]:
     """
     Map complexity mode → token id(s). Always returns per-batch lists.
@@ -122,6 +123,7 @@ def resolve_complexity_id(
             prim_linetypes,
             prim_geom,
             prim_mask,
+            prim_group_ids=prim_group_ids,
         )
         if isinstance(raw, list):
             cids = [int(x) for x in raw]
@@ -311,6 +313,7 @@ def generate_pred_steps_batched(
                             prim_linetypes=dxf["prim_linetypes"],
                             prim_geom=dxf["prim_geom"],
                             prim_mask=dxf["prim_mask"],
+                            prim_group_ids=dxf.get("prim_group_ids"),
                         )
                         prompt_rows = []
                         for c in cids:
@@ -337,6 +340,7 @@ def generate_pred_steps_batched(
                             prim_linetypes=dxf["prim_linetypes"],
                             prim_geom=dxf["prim_geom"],
                             prim_mask=dxf["prim_mask"],
+                            prim_group_ids=dxf.get("prim_group_ids"),
                         )
                         t_ar = time.perf_counter() - t_ar0
                         tokens = torch.concat([prompt, samples], -1).detach().cpu()
