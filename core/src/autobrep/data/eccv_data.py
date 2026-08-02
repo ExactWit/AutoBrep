@@ -159,6 +159,10 @@ class ECCVViewDataModule(ARDataModule):
             pc.field("num_faces") <= self.hparams.max_face
         )
 
+    def _count_columns(self):
+        # pre_filter only inspects these small pickled arrays.
+        return ["face_edge_incidence", "face_bbox_world", "edge_bbox_world"]
+
     def _dataset_columns(self) -> List[str]:
         return list(dict.fromkeys(self.columns))
 

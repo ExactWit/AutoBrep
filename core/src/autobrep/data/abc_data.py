@@ -1,5 +1,8 @@
 import abc
 import functools
+import hashlib
+import json
+import os
 import random
 from abc import abstractmethod
 from typing import Any, Dict, Iterator, List, Optional, Union
@@ -21,6 +24,25 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 from torch.utils.data import DataLoader, IterableDataset
+
+
+def _parquet_signature(paths: str) -> list:
+    """(name, size, mtime_ns) of every parquet file under ``paths`` (cheap stat)."""
+    sig = []
+    if os.path.isfile(paths):
+        st = os.stat(paths)
+        sig.append([os.path.basename(paths), st.st_size, st.st_mtime_ns])
+        return sig
+    for root, _dirs, files in os.walk(paths):
+        for name in sorted(files):
+            if name.endswith((".parquet", ".pq")):
+                fp = os.path.join(root, name)
+                try:
+                    st = os.stat(fp)
+                except OSError:
+                    continue
+                sig.append([os.path.relpath(fp, paths), st.st_size, st.st_mtime_ns])
+    return sig
 
 
 class ParquetRowIterable(IterableDataset):
@@ -74,6 +96,38 @@ class ParquetRowIterable(IterableDataset):
     ) -> int:
         dataset = ds.dataset(paths, format="parquet")
         return int(dataset.count_rows(filter=filter_expr))
+
+    @staticmethod
+    def count_rows_precise(
+        paths: str,
+        columns: List[str],
+        filter_expr: Optional[pc.Expression],
+        row_filter,
+        cap: Optional[int] = None,
+    ) -> int:
+        """Count rows that survive the pushdown filter AND ``row_filter``.
+
+        Mirrors the filtering stages of ``_iter_rows`` (minus unpickle/map_func,
+        which never drop rows). ``cap`` stops the scan early once reached --
+        valid because callers only need ``min(count, cap)``.
+        """
+        dataset = ds.dataset(paths, format="parquet")
+        scanner = dataset.scanner(
+            columns=columns, filter=filter_expr, batch_size=4096
+        )
+        n = 0
+        for record_batch in scanner.to_batches():
+            cols = {
+                name: record_batch.column(i)
+                for i, name in enumerate(record_batch.schema.names)
+            }
+            for idx in range(record_batch.num_rows):
+                row = {k: cols[k][idx].as_py() for k in cols.keys()}
+                if row_filter(row):
+                    n += 1
+                    if cap is not None and n >= cap:
+                        return n
+        return n
 
     def _resolve_length(self, length: Optional[int]) -> Optional[int]:
         if length is not None:
@@ -221,6 +275,72 @@ class BaseDataModule(abc.ABC, LightningDataModule):
             expr = expr & pc.field("scaled_unique")
         return expr
 
+    def _count_columns(self) -> Optional[List[str]]:
+        """Light columns sufficient for ``pre_filter`` during the precise count.
+
+        Override in subclasses whose ``pre_filter`` reads only a few small
+        columns. ``None`` falls back to a full-pipeline count (slower).
+        """
+        return None
+
+    def _count_precise(self, paths: str, expr, cap: Optional[int]) -> int:
+        """Exact number of rows the iterable will yield (python filters applied).
+
+        Lightning only fires epoch-end validation when the train loader reaches
+        its declared ``__len__``. The pushdown-only count overestimates once
+        ``pre_filter`` drops rows, so epochs end early and validation never runs
+        (observed: 50 epochs, zero val_loss / official metrics). Count once and
+        cache next to the parquet data; ``cap`` (limit_train/limit_val) stops
+        the scan early but such capped counts are not cached.
+        """
+        key = {
+            "v": 1,
+            "cls": type(self).__name__,
+            "paths": os.path.abspath(paths),
+            "sig": _parquet_signature(paths),
+            "expr": str(expr),
+            "hp": [
+                getattr(self.hparams, k, None)
+                for k in ("min_face", "max_face", "max_edge", "bit")
+            ],
+        }
+        digest = hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
+        cache_path = os.path.join(paths, f".plen_{digest}.json")
+        try:
+            with open(cache_path) as f:
+                n = int(json.load(f)["count"])
+            return n
+        except Exception:
+            pass
+        cols = self._count_columns()
+        post_is_identity = type(self).post_filter is BaseDataModule.post_filter
+        if cols is not None and post_is_identity:
+            n = ParquetRowIterable.count_rows_precise(
+                paths, cols, expr, self.pre_filter, cap=cap
+            )
+        else:
+            full = ParquetRowIterable(
+                paths=paths,
+                columns=self._dataset_columns(),
+                filter_expr=expr,
+                pre_filter=self.pre_filter,
+                unpickle=self.unpickle,
+                post_filter=self.post_filter,
+                map_func=lambda row, aug: row,
+                aug=False,
+                limit=cap,
+                shuffle_buffer_size=None,
+                batch_rows_read=self.hparams.rows_per_arrow_batch,
+            )
+            n = sum(1 for _ in full)
+        if cap is None:
+            try:
+                with open(cache_path, "w") as f:
+                    json.dump({"count": n, "key": key}, f)
+            except OSError:
+                pass
+        return n
+
     def _dataset_columns(self) -> List[str]:
         extra = ["num_faces_after_splitting"]
         if self.hparams.scaled_unique:
@@ -236,15 +356,15 @@ class BaseDataModule(abc.ABC, LightningDataModule):
         if stage in (None, "fit"):
             train_paths = f"{self.hparams.data_root}/train"
             val_paths = f"{self.hparams.data_root}/val"
-            train_len = ParquetRowIterable.count_parquet_rows(train_paths, expr)
-            val_len = ParquetRowIterable.count_parquet_rows(val_paths, expr)
+            train_len = self._count_precise(train_paths, expr, cap=self.hparams.limit_train)
+            val_len = self._count_precise(val_paths, expr, cap=self.hparams.limit_val)
             if self.hparams.limit_train is not None:
                 train_len = min(train_len, int(self.hparams.limit_train))
             if self.hparams.limit_val is not None:
                 val_len = min(val_len, int(self.hparams.limit_val))
             print(
                 f"[data] sized IterableDataset train_rows={train_len} "
-                f"val_rows={val_len} (arrow filter; python pre_filter may drop a few)",
+                f"val_rows={val_len} (precise: pushdown + python pre_filter)",
                 flush=True,
             )
 
