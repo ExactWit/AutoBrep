@@ -13,6 +13,7 @@ EXP_DIR_ARG=""
 OUTPUT_DIR_ARG=""
 DATA_DIR_ARG=""
 DATASPLIT_ARG=""
+SPLIT_ARG=""
 DATASET_ARG=""
 TASK_ARG=""
 CHECKPOINT_ARG=""
@@ -86,6 +87,7 @@ while [[ $# -gt 0 ]]; do
     --output-dir) OUTPUT_DIR_ARG="$2"; shift 2 ;;
     --data-dir|--dataset-dir) DATA_DIR_ARG="$2"; shift 2 ;;
     --datasplit) DATASPLIT_ARG="$2"; shift 2 ;;
+    --split) SPLIT_ARG="$2"; shift 2 ;;
     --dataset) DATASET_ARG="$2"; shift 2 ;;
     --task) TASK_ARG="$2"; shift 2 ;;
     --checkpoint) CHECKPOINT_ARG="$2"; shift 2 ;;
@@ -225,6 +227,7 @@ case "${MODE}" in
     "test": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
       "data_dir": "/data/hdd/datasets/eccv2026ws-cad-data",
+      "split": "test",
       "complexity": "from_condition",
       "temperature": 1.0,
       "top_p": 0.9,
@@ -310,6 +313,7 @@ case "${MODE}" in
       "--weight-folder",
       "--data-dir",
       "--datasplit",
+      "--split",
       "--checkpoint",
       "--gpu",
       "--complexity",
@@ -641,7 +645,7 @@ JSON
       --data-dir "${DATA_ROOT}"
       --weight-folder "${WEIGHT_FOLDER}"
       --gpu "${GPU}"
-      --split test
+      --split "${SPLIT_ARG:-test}"
       --complexity "${COMPLEXITY}"
       --temperature "${TEMPERATURE}"
       --top-p "${TOP_P}"
