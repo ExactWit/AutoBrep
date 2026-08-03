@@ -419,6 +419,17 @@ def main() -> int:
         save_last=True,
         every_n_train_steps=None,
     )
+    # Keep a stable best.ckpt alias: exp_launcher's resume/test/infer modes
+    # auto-pick checkpoints/best.ckpt before last.ckpt.
+    best_alias_cb = ModelCheckpoint(
+        dirpath=str(ckpt_dir),
+        filename="best",
+        monitor="val_loss",
+        mode="min",
+        save_top_k=1,
+        save_last=False,
+        every_n_train_steps=None,
+    )
     logger = TensorBoardLogger(save_dir=str(tb_dir), name="eccv_view")
 
     official_val_cb = EccvOfficialValCallback(
@@ -450,6 +461,7 @@ def main() -> int:
             # intermittent worker SegFaults (MMA ep42 / topo ep5 crashes).
             "callbacks": [
                 ckpt_cb,
+                best_alias_cb,
                 LearningRateMonitor(logging_interval="step"),
                 _CudaWatch(),
                 official_val_cb,
