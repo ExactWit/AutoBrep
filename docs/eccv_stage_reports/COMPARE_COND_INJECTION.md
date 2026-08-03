@@ -11,7 +11,7 @@
 | **R1** `260728-201614` | 无条件 AR 参照 + analytic | 0.500 | 0.064 | 0.017 | 0.015 | 0.016 | **0.042** | **0.021** | hard 仅 4%；多数 medium |
 | **topo-v2** `#39` `60f1b9f4` | prim-direct + topo sketch；`from_condition` | 0.480 | 0.023 | 0.007 | 0.006 | 0.007 | **0.016** | **0.0077** | hard 误分 40% |
 | **prim-direct** `#40` `d7c58f70` | per-prim 直进 prefix | 0.471 | 0.020 | 0.004 | 0.004 | 0.004 | **0.013** | **0.0060** | 与 topo 同结构偏低 |
-| **P1-A** `#41` `3faf0c45` | compressor(64)+fuse xattn | — | — | — | — | — | — | — | best→test 进行中 |
+| **P1-A** `#41` `3faf0c45` | compressor(64)+fuse xattn | 0.394 | 0.034 | 0.010 | 0.007 | 0.008 | **0.021** | **0.0083** | best→test 完成 |
 
 配对 bootstrap（topo vs direct，n=348，未生成=0）：Δsummary=+0.0017，95%CI 跨 0 → **方向偏好 topo，但不显著**。
 
