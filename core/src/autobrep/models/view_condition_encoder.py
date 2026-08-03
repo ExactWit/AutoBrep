@@ -128,6 +128,7 @@ class ViewConditionEncoder(nn.Module):
         prim_prefix_mode: str = "compress",
         use_topo_sketch: bool = False,
         topo_sketch_max: int = 64,
+        cond_dropout: float = 0.1,
     ):
         super().__init__()
         self.dim = dim
@@ -137,6 +138,8 @@ class ViewConditionEncoder(nn.Module):
         self.num_td_views = num_td_views
         self.view_dropout_max = view_dropout_max
         self.use_prim_seq_encoder = bool(use_prim_seq_encoder)
+        self.cond_dropout = float(cond_dropout)
+        self._last_cond_drop_mask: torch.Tensor | None = None
         self.prim_prefix_mode = str(prim_prefix_mode)
         if self.prim_prefix_mode not in ("compress", "direct"):
             raise ValueError(f"unknown prim_prefix_mode: {prim_prefix_mode}")
@@ -333,13 +336,20 @@ class ViewConditionEncoder(nn.Module):
                 prim_group_roles=prim_group_roles,
             )
             prim_seq = prim_seq.to(dtype=dtype)
+            # Per-sample TechDraw condition dropout (classifier-free style):
+            # dropped samples see an all-zero prim prefix while image latents stay.
+            cond_drop = None
             if self.training and not drop_techdraw:
-                if torch.rand((), device=images.device) < 0.1:
-                    prim_seq = torch.zeros_like(prim_seq)
-                    prim_seq_mask = torch.zeros_like(prim_seq_mask)
+                if self.cond_dropout > 0:
+                    cond_drop = (
+                        torch.rand(b, device=images.device) < self.cond_dropout
+                    )
             elif drop_techdraw:
-                prim_seq = torch.zeros_like(prim_seq)
-                prim_seq_mask = torch.zeros_like(prim_seq_mask)
+                cond_drop = torch.ones(b, dtype=torch.bool, device=images.device)
+            self._last_cond_drop_mask = cond_drop
+            if cond_drop is not None and bool(cond_drop.any()):
+                prim_seq = prim_seq.masked_fill(cond_drop.view(b, 1, 1), 0)
+                prim_seq_mask = prim_seq_mask & ~cond_drop.view(b, 1)
 
             if self.prim_prefix_mode == "direct":
                 # One token per primitive (no compressor); cap at num_latents.
@@ -399,6 +409,12 @@ class ViewConditionEncoder(nn.Module):
                 prim_group_roles=prim_group_roles,
             )
             sketch = sketch.to(dtype=dtype)
+            # Keep topo sketch consistent with prim-condition dropout, else the
+            # dropped condition leaks back in through the sketch tokens.
+            cond_drop = self._last_cond_drop_mask
+            if cond_drop is not None and bool(cond_drop.any()):
+                sketch = sketch.masked_fill(cond_drop.view(b, 1, 1), 0)
+                sketch_mask = sketch_mask & ~cond_drop.view(b, 1)
             self._last_topo_sketch = (sketch, sketch_mask)
             # Topology scaffold goes FIRST so AR attends it before geometry.
             prefix = torch.cat([sketch, prefix], dim=1)

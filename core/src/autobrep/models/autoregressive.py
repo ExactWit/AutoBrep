@@ -877,6 +877,8 @@ class AutoBrepViewModel(AutoBrepModel):
         use_topo_sketch: bool = False,
         topo_sketch_max: int = 64,
         topo_count_weight: float = 0.0,
+        cond_dropout: float = 0.1,
+        unfreeze_decoder_layers: int = 0,
     ) -> None:
         super().__init__(
             surf_fsq_ckpt=surf_fsq_ckpt,
@@ -912,6 +914,7 @@ class AutoBrepViewModel(AutoBrepModel):
             prim_prefix_mode=prim_prefix_mode,
             use_topo_sketch=use_topo_sketch,
             topo_sketch_max=topo_sketch_max,
+            cond_dropout=cond_dropout,
         )
         self.topo_count_weight = float(topo_count_weight)
 
@@ -924,16 +927,26 @@ class AutoBrepViewModel(AutoBrepModel):
                 self.surf_vae.requires_grad_(False)
             if hasattr(self, "edge_vae"):
                 self.edge_vae.requires_grad_(False)
+            n_unfreeze = int(unfreeze_decoder_layers)
+            if n_unfreeze > 0:
+                attn_layers = self.cad_gpt.ar_decoder.net.attn_layers.layers
+                n = min(n_unfreeze, len(attn_layers))
+                for block in attn_layers[-n:]:
+                    for p in block.parameters():
+                        p.requires_grad_(True)
+                # Keep final LayerNorm trainable so unfrozen blocks stay calibrated.
+                final_norm = getattr(self.cad_gpt.ar_decoder.net.attn_layers, "final_norm", None)
+                if final_norm is not None:
+                    for p in final_norm.parameters():
+                        p.requires_grad_(True)
 
-        self.trainable_params = [
-            p for p in self.view_encoder.parameters() if p.requires_grad
-        ]
+        self.trainable_params = [p for p in self.parameters() if p.requires_grad]
 
         n_train = sum(p.numel() for p in self.trainable_params)
         n_total = sum(p.numel() for p in self.parameters())
         print(
             f"[AutoBrepViewModel] trainable={n_train/1e6:.2f}M / total={n_total/1e6:.2f}M "
-            f"(freeze_backbone={freeze_backbone})"
+            f"(freeze_backbone={freeze_backbone}, unfreeze_decoder_layers={int(unfreeze_decoder_layers)})"
         )
 
     def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
@@ -1082,7 +1095,15 @@ class AutoBrepViewModel(AutoBrepModel):
             sketch_pack = self.view_encoder.get_topo_sketch()
             if sketch_pack is not None and "num_faces" in batch and "num_edges" in batch:
                 sketch, sketch_mask = sketch_pack
-                if sketch_mask.any():
+                cond_drop = getattr(self.view_encoder, "_last_cond_drop_mask", None)
+                if cond_drop is not None:
+                    # Dropped-condition samples carry no sketch; exclude from aux.
+                    keep = ~cond_drop
+                else:
+                    keep = torch.ones(
+                        sketch.shape[0], dtype=torch.bool, device=sketch.device
+                    )
+                if sketch_mask.any() and bool(keep.any()):
                     pooled = (
                         sketch * sketch_mask.unsqueeze(-1).to(sketch.dtype)
                     ).sum(1) / sketch_mask.sum(1, keepdim=True).clamp(min=1).to(sketch.dtype)
@@ -1094,7 +1115,8 @@ class AutoBrepViewModel(AutoBrepModel):
                         ],
                         dim=1,
                     ).to(pred.dtype)
-                    aux = torch.nn.functional.smooth_l1_loss(pred, tgt)
+                    per = torch.nn.functional.smooth_l1_loss(pred, tgt, reduction="none").sum(1)
+                    aux = (per * keep.to(per.dtype)).sum() / keep.to(per.dtype).sum().clamp(min=1)
                     self.log("train_topo_count_loss", aux, prog_bar=False, on_step=True, on_epoch=True)
                     loss = loss + self.topo_count_weight * aux
         return loss

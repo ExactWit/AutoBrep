@@ -61,6 +61,8 @@ OFFICIAL_VAL_EPOCH_FRAC="${OFFICIAL_VAL_EPOCH_FRAC:-0.25}"
 NO_OFFICIAL_VAL="${NO_OFFICIAL_VAL:-0}"
 EVAL_PY="${EVAL_PY:-/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py}"
 EVAL_GEN_BATCH="${EVAL_GEN_BATCH:-1}"
+GEN_RETRIES="${GEN_RETRIES:-1}"
+GEN_RERANK="${GEN_RERANK:-0}"
 MAKE_SUBMISSION_ZIP="${MAKE_SUBMISSION_ZIP:-0}"
 # ECCV view-cond default: epoch schedule on small set (override with --max-steps)
 ECCV_MAX_EPOCHS="${ECCV_MAX_EPOCHS:-50}"
@@ -72,6 +74,8 @@ PRIM_PREFIX_MODE="${PRIM_PREFIX_MODE:-direct}"
 USE_TOPO_SKETCH="${USE_TOPO_SKETCH:-0}"
 TOPO_SKETCH_MAX="${TOPO_SKETCH_MAX:-64}"
 TOPO_COUNT_WEIGHT="${TOPO_COUNT_WEIGHT:-0}"
+COND_DROPOUT="${COND_DROPOUT:-0.1}"
+UNFREEZE_DECODER_LAYERS="${UNFREEZE_DECODER_LAYERS:-0}"
 USE_DECODER_CROSS_ATTN="${USE_DECODER_CROSS_ATTN:-}"
 DECODER_XATTN_HEADS="${DECODER_XATTN_HEADS:-8}"
 ENABLE_AUX_VIEW_BBOX="${ENABLE_AUX_VIEW_BBOX:-0}"
@@ -135,6 +139,7 @@ while [[ $# -gt 0 ]]; do
     --eval-py) EVAL_PY="$2"; shift 2 ;;
     --gen-batch|--eval-gen-batch) EVAL_GEN_BATCH="$2"; shift 2 ;;
     --gen-retries) GEN_RETRIES="$2"; shift 2 ;;
+    --gen-rerank) GEN_RERANK="$2"; shift 2 ;;
     --make-submission-zip) MAKE_SUBMISSION_ZIP="$2"; shift 2 ;;
     --use-prim-seq-encoder) USE_PRIM_SEQ_ENCODER="$2"; shift 2 ;;
     --prim-d-model) PRIM_D_MODEL="$2"; shift 2 ;;
@@ -144,6 +149,8 @@ while [[ $# -gt 0 ]]; do
     --use-topo-sketch) USE_TOPO_SKETCH="$2"; shift 2 ;;
     --topo-sketch-max) TOPO_SKETCH_MAX="$2"; shift 2 ;;
     --topo-count-weight) TOPO_COUNT_WEIGHT="$2"; shift 2 ;;
+    --cond-dropout) COND_DROPOUT="$2"; shift 2 ;;
+    --unfreeze-decoder-layers) UNFREEZE_DECODER_LAYERS="$2"; shift 2 ;;
     --use-decoder-cross-attn) USE_DECODER_CROSS_ATTN="$2"; shift 2 ;;
     --decoder-xattn-heads) DECODER_XATTN_HEADS="$2"; shift 2 ;;
     --enable-aux-view-bbox) ENABLE_AUX_VIEW_BBOX="$2"; shift 2 ;;
@@ -220,6 +227,8 @@ case "${MODE}" in
       "use_topo_sketch": 1,
       "topo_sketch_max": 64,
       "topo_count_weight": 0.1,
+      "cond_dropout": 0.1,
+      "unfreeze_decoder_layers": 0,
       "use_decoder_cross_attn": 0,
       "enable_aux_view_bbox": 0,
       "enable_aux_surf_type": 0,
@@ -234,6 +243,7 @@ case "${MODE}" in
       "top_p": 0.9,
       "gen_batch": 1,
       "gen_retries": 1,
+      "gen_rerank": 0,
       "postprocess_analytic": 1
     },
     "infer": {
@@ -262,6 +272,7 @@ case "${MODE}" in
       "top_p": 0.9,
       "gen_batch": 1,
       "gen_retries": 1,
+      "gen_rerank": 0,
       "make_submission_zip": true
     }
   },
@@ -304,6 +315,8 @@ case "${MODE}" in
       "--use-topo-sketch",
       "--topo-sketch-max",
       "--topo-count-weight",
+      "--cond-dropout",
+      "--unfreeze-decoder-layers",
       "--use-decoder-cross-attn",
       "--decoder-xattn-heads",
       "--enable-aux-view-bbox",
@@ -324,6 +337,7 @@ case "${MODE}" in
       "--top-p",
       "--gen-batch",
       "--gen-retries",
+      "--gen-rerank",
       "--eval-py",
       "--postprocess-analytic"
     ],
@@ -361,6 +375,7 @@ case "${MODE}" in
       "--top-p",
       "--gen-batch",
       "--gen-retries",
+      "--gen-rerank",
       "--make-submission-zip"
     ]
   },
@@ -522,6 +537,8 @@ JSON
             --topo-count-weight "${TOPO_COUNT_WEIGHT}"
           )
         fi
+        TRAIN_ARGS+=(--cond-dropout "${COND_DROPOUT}")
+        TRAIN_ARGS+=(--unfreeze-decoder-layers "${UNFREEZE_DECODER_LAYERS}")
       fi
       if [[ "${USE_DECODER_CROSS_ATTN}" == "1" ]]; then
         TRAIN_ARGS+=(
@@ -656,6 +673,7 @@ JSON
       --top-p "${TOP_P}"
       --gen-batch "${EVAL_GEN_BATCH}"
       --gen-retries "${GEN_RETRIES:-1}"
+      --gen-rerank "${GEN_RERANK:-0}"
       --eval-py "${EVAL_PY}"
     )
     if [[ -n "${DATASPLIT_ARG}" ]]; then
@@ -692,6 +710,7 @@ JSON
       --top-p "${TOP_P}"
       --gen-batch "${EVAL_GEN_BATCH}"
       --gen-retries "${GEN_RETRIES:-1}"
+      --gen-rerank "${GEN_RERANK:-0}"
       --make-submission-zip 1
     )
     if [[ -n "${DATASPLIT_ARG}" ]]; then

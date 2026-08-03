@@ -128,6 +128,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-samples", type=int, default=-1)
     p.add_argument("--gen-batch", type=int, default=1)
     p.add_argument("--gen-retries", type=int, default=1)
+    p.add_argument(
+        "--gen-rerank",
+        type=_parse_bool,
+        default=False,
+        help="With gen-retries>1: sample all K and keep best success",
+    )
     p.add_argument("--complexity", default="from_condition")
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--top-p", type=float, default=0.9)
@@ -226,6 +232,7 @@ def main() -> int:
         split=split,
         require_gt=not is_public,
         gen_retries=max(1, int(args.gen_retries)),
+        gen_rerank=bool(args.gen_rerank),
     )
     for i, status in enumerate(gen_log):
         if (i + 1) % 10 == 0 or not status.get("ok") or i == 0 or i + 1 == len(gen_log):
@@ -246,6 +253,7 @@ def main() -> int:
         "checkpoint": str(ckpt),
         "gen_batch": int(args.gen_batch),
         "gen_retries": int(args.gen_retries),
+        "gen_rerank": bool(args.gen_rerank),
     }
 
     if not is_public:

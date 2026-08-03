@@ -59,6 +59,18 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Aux face/edge cardinality loss weight (0=off)",
     )
+    p.add_argument(
+        "--cond-dropout",
+        type=float,
+        default=0.1,
+        help="Per-sample TechDraw condition drop prob during training (0=off)",
+    )
+    p.add_argument(
+        "--unfreeze-decoder-layers",
+        type=int,
+        default=0,
+        help="Unfreeze last N AR decoder blocks (0=keep fully frozen)",
+    )
     p.add_argument("--accumulate-grad-batches", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--resume-from", default="")
@@ -261,6 +273,8 @@ def main() -> int:
         "use_topo_sketch": bool(args.use_topo_sketch),
         "topo_sketch_max": int(args.topo_sketch_max),
         "topo_count_weight": float(args.topo_count_weight),
+        "cond_dropout": float(args.cond_dropout),
+        "unfreeze_decoder_layers": int(args.unfreeze_decoder_layers),
         "freeze_backbone": True,
         "load_point_cloud": False,
         "loss": "AR token CE (prepend excluded)",
@@ -317,6 +331,8 @@ def main() -> int:
     model_args["use_topo_sketch"] = bool(args.use_topo_sketch)
     model_args["topo_sketch_max"] = int(args.topo_sketch_max)
     model_args["topo_count_weight"] = float(args.topo_count_weight)
+    model_args["cond_dropout"] = float(args.cond_dropout)
+    model_args["unfreeze_decoder_layers"] = int(args.unfreeze_decoder_layers)
     model_args["surf_fsq_ckpt"] = str(weight / "surf-fsq.ckpt")
     model_args["edge_fsq_ckpt"] = str(weight / "edge-fsq.ckpt")
     model_args["ar_ckpt"] = str(weight / "ar.ckpt")

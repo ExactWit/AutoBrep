@@ -264,6 +264,7 @@ def generate_pred_steps_batched(
     split: str = "val",
     require_gt: bool = True,
     gen_retries: int = 1,
+    gen_rerank: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Batched AR generate (uses more VRAM), then serial decode/rebuild per sample.
@@ -280,20 +281,39 @@ def generate_pred_steps_batched(
     n_total = len(ids)
     bs = max(1, int(gen_batch_size))
     max_attempts = max(1, int(gen_retries))
+    do_rerank = bool(gen_rerank) and max_attempts > 1
     t_all = time.perf_counter()
     final: dict[str, dict[str, Any]] = {}
     pending = list(ids)
     n_ok_total = 0
+
+    def _rerank_score(status: dict[str, Any]) -> float:
+        if not status.get("ok"):
+            return -1e9
+        nf = int(status.get("num_faces") or 0)
+        label = str(status.get("complexity") or "").replace("from_condition:", "")
+        if label == "easy":
+            in_bucket = 1.0 if nf < 25 else 0.0
+        elif label == "hard":
+            in_bucket = 1.0 if nf >= 50 else 0.0
+        else:
+            in_bucket = 1.0 if 25 <= nf < 50 else (0.5 if nf < 25 else 0.0)
+        return in_bucket * 1000.0 + float(nf)
+
     print(
         f"[STEP gen] start n={n_total} gen_batch={bs} "
-        f"split={split} complexity={complexity} retries={max_attempts}",
+        f"split={split} complexity={complexity} retries={max_attempts} "
+        f"rerank={int(do_rerank)}",
         flush=True,
     )
     try:
       for attempt in range(1, max_attempts + 1):
-        if not pending:
+        if not pending and not do_rerank:
             break
-        ids_this = pending
+        if do_rerank:
+            ids_this = list(ids)
+        else:
+            ids_this = pending
         pending = []
         n_round = len(ids_this)
         n_chunks = (n_round + bs - 1) // bs if n_round else 0
@@ -386,23 +406,32 @@ def generate_pred_steps_batched(
                     status["attempts"] = attempt
                     if status.get("ok"):
                         n_ok += 1
-                        final[sid] = status
+                        prev = final.get(sid)
+                        if do_rerank and prev is not None and prev.get("ok"):
+                            if _rerank_score(status) > _rerank_score(prev):
+                                # Overwrite STEP file already written by _tokens_to_step.
+                                final[sid] = status
+                        else:
+                            final[sid] = status
                     else:
                         n_fail += 1
-                        final[sid] = status
-                        if attempt < max_attempts:
+                        if sid not in final or not final[sid].get("ok"):
+                            final[sid] = status
+                        if (not do_rerank) and attempt < max_attempts:
                             pending.append(sid)
                 t_dec = time.perf_counter() - t_dec0
             except Exception as exc:  # noqa: BLE001
                 for sid in chunk:
-                    final[sid] = {
+                    status = {
                         "sample_id": sid,
                         "ok": False,
                         "error": f"exception:{type(exc).__name__}:{exc}",
                         "attempts": attempt,
                     }
+                    if sid not in final or not final[sid].get("ok"):
+                        final[sid] = status
                     n_fail += 1
-                    if attempt < max_attempts:
+                    if (not do_rerank) and attempt < max_attempts:
                         pending.append(sid)
             done = n_ok_total + n_ok + n_fail
             elapsed = max(time.perf_counter() - t_all, 1e-6)
