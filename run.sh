@@ -134,6 +134,7 @@ while [[ $# -gt 0 ]]; do
     --no-official-val) NO_OFFICIAL_VAL="$2"; shift 2 ;;
     --eval-py) EVAL_PY="$2"; shift 2 ;;
     --gen-batch|--eval-gen-batch) EVAL_GEN_BATCH="$2"; shift 2 ;;
+    --gen-retries) GEN_RETRIES="$2"; shift 2 ;;
     --make-submission-zip) MAKE_SUBMISSION_ZIP="$2"; shift 2 ;;
     --use-prim-seq-encoder) USE_PRIM_SEQ_ENCODER="$2"; shift 2 ;;
     --prim-d-model) PRIM_D_MODEL="$2"; shift 2 ;;
@@ -232,6 +233,7 @@ case "${MODE}" in
       "temperature": 1.0,
       "top_p": 0.9,
       "gen_batch": 1,
+      "gen_retries": 1,
       "postprocess_analytic": 1
     },
     "infer": {
@@ -259,6 +261,7 @@ case "${MODE}" in
       "temperature": 1.0,
       "top_p": 0.9,
       "gen_batch": 1,
+      "gen_retries": 1,
       "make_submission_zip": true
     }
   },
@@ -320,6 +323,7 @@ case "${MODE}" in
       "--temperature",
       "--top-p",
       "--gen-batch",
+      "--gen-retries",
       "--eval-py",
       "--postprocess-analytic"
     ],
@@ -356,6 +360,7 @@ case "${MODE}" in
       "--temperature",
       "--top-p",
       "--gen-batch",
+      "--gen-retries",
       "--make-submission-zip"
     ]
   },
@@ -650,6 +655,7 @@ JSON
       --temperature "${TEMPERATURE}"
       --top-p "${TOP_P}"
       --gen-batch "${EVAL_GEN_BATCH}"
+      --gen-retries "${GEN_RETRIES:-1}"
       --eval-py "${EVAL_PY}"
     )
     if [[ -n "${DATASPLIT_ARG}" ]]; then
@@ -685,6 +691,7 @@ JSON
       --temperature "${TEMPERATURE}"
       --top-p "${TOP_P}"
       --gen-batch "${EVAL_GEN_BATCH}"
+      --gen-retries "${GEN_RETRIES:-1}"
       --make-submission-zip 1
     )
     if [[ -n "${DATASPLIT_ARG}" ]]; then

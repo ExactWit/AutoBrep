@@ -263,32 +263,46 @@ def generate_pred_steps_batched(
     z_threshold: float = 0.0,
     split: str = "val",
     require_gt: bool = True,
+    gen_retries: int = 1,
 ) -> list[dict[str, Any]]:
     """
     Batched AR generate (uses more VRAM), then serial decode/rebuild per sample.
 
     ``gen_batch_size`` controls how many conditioned prompts share one AR pass.
     ``split`` selects condition root (``public_test`` → ``test_public/``).
+    ``gen_retries`` > 1 resamples failed samples (decode/rebuild failure) up to
+    that many total attempts; temperature/top_p sampling gives fresh candidates.
     """
     was_training = transformer.training
     transformer.eval()
-    results: list[dict[str, Any]] = []
     ids = [str(s) for s in sample_ids]
     _ = require_gt  # reserved; callers filter ids before invoking
     n_total = len(ids)
     bs = max(1, int(gen_batch_size))
-    n_chunks = (n_total + bs - 1) // bs if n_total else 0
+    max_attempts = max(1, int(gen_retries))
     t_all = time.perf_counter()
-    n_ok = 0
-    n_fail = 0
+    final: dict[str, dict[str, Any]] = {}
+    pending = list(ids)
+    n_ok_total = 0
     print(
-        f"[STEP gen] start n={n_total} gen_batch={bs} chunks={n_chunks} "
-        f"split={split} complexity={complexity}",
+        f"[STEP gen] start n={n_total} gen_batch={bs} "
+        f"split={split} complexity={complexity} retries={max_attempts}",
         flush=True,
     )
     try:
-        for chunk_i, start in enumerate(range(0, n_total, bs)):
-            chunk = ids[start : start + bs]
+      for attempt in range(1, max_attempts + 1):
+        if not pending:
+            break
+        ids_this = pending
+        pending = []
+        n_round = len(ids_this)
+        n_chunks = (n_round + bs - 1) // bs if n_round else 0
+        n_ok = 0
+        n_fail = 0
+        if max_attempts > 1:
+            print(f"[STEP gen] attempt {attempt}/{max_attempts} n={n_round}", flush=True)
+        for chunk_i, start in enumerate(range(0, n_round, bs)):
+            chunk = ids_this[start : start + bs]
             t_chunk = time.perf_counter()
             t_ar = 0.0
             t_dec = 0.0
@@ -369,23 +383,28 @@ def generate_pred_steps_batched(
                             "ok": False,
                             "error": f"exception:{type(exc).__name__}:{exc}",
                         }
+                    status["attempts"] = attempt
                     if status.get("ok"):
                         n_ok += 1
+                        final[sid] = status
                     else:
                         n_fail += 1
-                    results.append(status)
+                        final[sid] = status
+                        if attempt < max_attempts:
+                            pending.append(sid)
                 t_dec = time.perf_counter() - t_dec0
             except Exception as exc:  # noqa: BLE001
                 for sid in chunk:
-                    results.append(
-                        {
-                            "sample_id": sid,
-                            "ok": False,
-                            "error": f"exception:{type(exc).__name__}:{exc}",
-                        }
-                    )
+                    final[sid] = {
+                        "sample_id": sid,
+                        "ok": False,
+                        "error": f"exception:{type(exc).__name__}:{exc}",
+                        "attempts": attempt,
+                    }
                     n_fail += 1
-            done = n_ok + n_fail
+                    if attempt < max_attempts:
+                        pending.append(sid)
+            done = n_ok_total + n_ok + n_fail
             elapsed = max(time.perf_counter() - t_all, 1e-6)
             rate_h = done / elapsed * 3600.0
             eta_s = (n_total - done) / max(done / elapsed, 1e-9) if done else float("nan")
@@ -393,17 +412,21 @@ def generate_pred_steps_batched(
             chunk_s = time.perf_counter() - t_chunk
             print(
                 f"[STEP gen] {done}/{n_total} ({100.0 * done / max(n_total, 1):.1f}%) "
-                f"ok={n_ok} fail={n_fail} | {rate_h:.1f}/h ETA {eta_h:.1f}h | "
-                f"chunk {chunk_i + 1}/{n_chunks} {chunk_s:.1f}s "
+                f"ok={n_ok_total + n_ok} fail={n_fail} | {rate_h:.1f}/h ETA {eta_h:.1f}h | "
+                f"attempt {attempt}/{max_attempts} chunk {chunk_i + 1}/{n_chunks} {chunk_s:.1f}s "
                 f"(AR {t_ar:.1f}s + decode {t_dec:.1f}s) ids={chunk}",
                 flush=True,
             )
+        n_ok_total += n_ok
     finally:
         transformer.train(was_training)
+    results = [final[sid] for sid in ids]
+    n_ok_final = sum(1 for r in results if r.get("ok"))
     elapsed = time.perf_counter() - t_all
     print(
-        f"[STEP gen] done {n_ok + n_fail}/{n_total} ok={n_ok} fail={n_fail} "
-        f"in {elapsed / 60.0:.1f} min ({(n_ok + n_fail) / max(elapsed, 1e-6) * 3600.0:.1f}/h)",
+        f"[STEP gen] done {n_total}/{n_total} ok={n_ok_final} fail={n_total - n_ok_final} "
+        f"attempts_used<={max_attempts} "
+        f"in {elapsed / 60.0:.1f} min ({n_total / max(elapsed, 1e-6) * 3600.0:.1f}/h)",
         flush=True,
     )
     return results
