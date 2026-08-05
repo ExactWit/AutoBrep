@@ -105,8 +105,11 @@ class ViewConditionEncoder(nn.Module):
 
     Modes:
       - ``use_prim_seq_encoder=False`` (P0): per-view SetEncoder → 3 TD tokens
-      - ``use_prim_seq_encoder=True`` (P1-A): PrimTransformerEncoder (≤384) →
-        SoftPrefixCompressor (M=64) over [img tokens | prim seq]
+      - ``use_prim_seq_encoder=True`` + ``prim_prefix_mode=compress`` (P1-A):
+        PrimTransformerEncoder → SoftPrefixCompressor (M=64) + image fuse
+      - ``prim_prefix_mode=direct``: prim tokens truncated/padded to M (legacy)
+      - ``prim_prefix_mode=prefix_lm``: image + all prim tokens as AR soft
+        prefix; caller applies prefix-LM attn mask (CAD↛condition)
     """
 
     def __init__(
@@ -141,10 +144,11 @@ class ViewConditionEncoder(nn.Module):
         self.cond_dropout = float(cond_dropout)
         self._last_cond_drop_mask: torch.Tensor | None = None
         self.prim_prefix_mode = str(prim_prefix_mode)
-        if self.prim_prefix_mode not in ("compress", "direct"):
+        if self.prim_prefix_mode not in ("compress", "direct", "prefix_lm"):
             raise ValueError(f"unknown prim_prefix_mode: {prim_prefix_mode}")
         self.use_topo_sketch = bool(use_topo_sketch)
         self.topo_sketch_max = int(topo_sketch_max)
+        self._last_prefix_valid: torch.Tensor | None = None
 
         weights = ResNet18_Weights.DEFAULT if pretrained_backbone else None
         backbone = resnet18(weights=weights)
@@ -363,6 +367,15 @@ class ViewConditionEncoder(nn.Module):
                         [prim_seq, torch.zeros(b, pad, prim_seq.shape[-1], dtype=dtype, device=prim_seq.device)],
                         dim=1,
                     )
+                self._last_prefix_valid = None
+            elif self.prim_prefix_mode == "prefix_lm":
+                # Keep image + all prim tokens (no compressor). Soft prefix is
+                # later attended inside AR with an explicit prefix-LM mask.
+                hidden = torch.cat([img_tokens, prim_seq], dim=1)  # (B, 3+L, H)
+                img_mask = torch.ones(b, self.num_image_views, dtype=torch.bool, device=images.device)
+                cond_token_mask = torch.cat([img_mask, prim_seq_mask], dim=1)
+                # Stash validity for bos/eos wrappers added below.
+                self._last_prefix_valid = cond_token_mask
             else:
                 # Compress prim seq → M; fuse with image tokens via another cross-attn
                 key_pad = ~prim_seq_mask
@@ -376,7 +389,9 @@ class ViewConditionEncoder(nn.Module):
                 attn_out, _ = self.fuse_cross_attn(q, mem, mem, need_weights=False)
                 hidden = q + attn_out
                 hidden = hidden + self.fuse_ff(hidden)
+                self._last_prefix_valid = None
         else:
+            self._last_prefix_valid = None
             td = self.techdraw_encoder(
                 prim_types, prim_linetypes, prim_geom.float(), prim_mask
             ).to(dtype=dtype)
@@ -399,6 +414,13 @@ class ViewConditionEncoder(nn.Module):
         eos = self.eos_view.expand(b, -1, -1)
         prefix = torch.cat([bos, tokens, eos], dim=1)
 
+        # Wrap condition validity with always-valid BOS/EOS soft markers.
+        if self._last_prefix_valid is not None:
+            ones = torch.ones(b, 1, dtype=torch.bool, device=prefix.device)
+            self._last_prefix_valid = torch.cat(
+                [ones, self._last_prefix_valid.to(device=prefix.device), ones], dim=1
+            )
+
         if self.use_topo_sketch and self.topo_encoder is not None:
             sketch, sketch_mask = self.topo_encoder(
                 prim_types,
@@ -418,6 +440,11 @@ class ViewConditionEncoder(nn.Module):
             self._last_topo_sketch = (sketch, sketch_mask)
             # Topology scaffold goes FIRST so AR attends it before geometry.
             prefix = torch.cat([sketch, prefix], dim=1)
+            if self._last_prefix_valid is not None:
+                # Sketch tokens are condition-side; treat pad sketch as invalid.
+                self._last_prefix_valid = torch.cat(
+                    [sketch_mask.to(dtype=torch.bool), self._last_prefix_valid], dim=1
+                )
         else:
             self._last_topo_sketch = None
         return prefix

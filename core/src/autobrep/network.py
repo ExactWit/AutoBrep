@@ -1245,25 +1245,41 @@ class XTransformer(nn.Module):
             ignore_index=-1,
         )
 
-    def forward(self, x, cond_mask=None, attn_mask=None, prepend_embeds=None):
+    def forward(self, x, cond_mask=None, attn_mask=None, prepend_embeds=None, causal=None):
         """forward pass
 
         Args:
             prepend_embeds: optional (B, M, dim) continuous prefix (e.g. point-cloud
                 soft tokens). AutoregressiveWrapper strips them from CE logits.
+            attn_mask: optional bool mask (True=allow). Prefer ``(B, T, T)`` covering
+                ``prepend + x`` when using prefix-LM. Do not pre-crop.
+            causal: optional override; set False when ``attn_mask`` already encodes
+                the full prefix-LM pattern.
         """
         target = x[:, 1:]
 
-        # attention mask is per-head
+        decode_kwargs = {
+            "return_outputs": True,
+            "prepend_embeds": prepend_embeds,
+        }
         if attn_mask is not None:
-            attn_mask = attn_mask.unsqueeze(1).repeat(1,self.heads,1,1)[:, :, :-1, :-1]
+            # Legacy path used a discrete-only mask cropped to L-1; prefix-LM passes
+            # a full (prepend+seq) mask and must not be cropped here.
+            if (
+                prepend_embeds is None
+                and attn_mask.ndim >= 2
+                and attn_mask.shape[-1] == x.shape[1]
+            ):
+                if attn_mask.ndim == 2:
+                    attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)
+                elif attn_mask.ndim == 3:
+                    attn_mask = attn_mask.unsqueeze(1)
+                attn_mask = attn_mask.repeat(1, self.heads, 1, 1)[:, :, :-1, :-1]
+            decode_kwargs["attn_mask"] = attn_mask
+        if causal is not None:
+            decode_kwargs["causal"] = causal
 
-        _, (logits, _) = self.ar_decoder(
-            x,
-            return_outputs=True,
-            attn_mask=attn_mask,
-            prepend_embeds=prepend_embeds,
-        )
+        _, (logits, _) = self.ar_decoder(x, **decode_kwargs)
 
         if cond_mask is not None:
             # Ignore loss for user conditional tokens

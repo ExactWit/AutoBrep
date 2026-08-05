@@ -64,16 +64,20 @@ class PrimTransformerEncoder(nn.Module):
         self.pos_embed = nn.Embedding(max_seq, d_model)
         self.drop = nn.Dropout(dropout)
 
-        layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=n_heads,
-            dim_feedforward=d_model * 4,
-            dropout=dropout,
-            batch_first=True,
-            activation="gelu",
-            norm_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+        # n_layers=0 → embedding-only (prefix-LM lets the AR stack do abstraction).
+        if int(n_layers) <= 0:
+            self.encoder = nn.Identity()
+        else:
+            layer = nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=n_heads,
+                dim_feedforward=d_model * 4,
+                dropout=dropout,
+                batch_first=True,
+                activation="gelu",
+                norm_first=True,
+            )
+            self.encoder = nn.TransformerEncoder(layer, num_layers=int(n_layers))
         self.out_proj = (
             nn.Identity()
             if self.out_dim == d_model
@@ -181,7 +185,10 @@ class PrimTransformerEncoder(nn.Module):
             tokens = tokens.clone()
             tokens[empty, 0] = 0.0
 
-        hidden = self.encoder(tokens, src_key_padding_mask=pad)
+        if isinstance(self.encoder, nn.Identity):
+            hidden = self.encoder(tokens)
+        else:
+            hidden = self.encoder(tokens, src_key_padding_mask=pad)
         hidden = self.out_proj(hidden)
         if empty.any():
             hidden = hidden.clone()

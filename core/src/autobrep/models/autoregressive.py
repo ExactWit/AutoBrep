@@ -15,6 +15,7 @@ from autobrep.models.autoregressive_samplers import TopP
 from autobrep.models.dataclass import BrepGenCAD, CheckpointPaths
 from autobrep.models.generate_prepend import generate_with_prepend_kv_cache
 from autobrep.models.point_cloud_encoder import PointCloudConditionEncoder
+from autobrep.models.prefix_lm_mask import build_prefix_lm_attn_mask
 from autobrep.models.view_condition_encoder import ViewConditionEncoder
 from autobrep.models.vaes import EdgeFSQVAE, SurfaceFSQVAE
 from autobrep.network import XTransformer
@@ -1085,11 +1086,24 @@ class AutoBrepViewModel(AutoBrepModel):
             images, prim_types, prim_linetypes, prim_geom, prim_mask,
             prim_group_ids=prim_group_ids,
         )
+        attn_mask = None
+        causal = None
+        prefix_valid = getattr(self.view_encoder, "_last_prefix_valid", None)
+        if (
+            prefix_valid is not None
+            and getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm"
+        ):
+            attn_mask = build_prefix_lm_attn_mask(
+                prefix_valid, seq_len=int(updated_token.shape[1])
+            )
+            # Full pattern is in attn_mask; disable default causal so prefix is bidirectional.
+            causal = False
         loss = self.cad_gpt(
             updated_token,
             cond_mask=loss_mask,
-            attn_mask=None,
+            attn_mask=attn_mask,
             prepend_embeds=prepend,
+            causal=causal,
         )
         if self.topo_count_weight > 0 and self.view_encoder.topo_count_head is not None:
             sketch_pack = self.view_encoder.get_topo_sketch()
@@ -1135,17 +1149,27 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_group_ids=None,
     ):
         prepend = None
+        prefix_attn_mask = None
         if images is not None:
             prepend = self.encode_views(
                 images, prim_types, prim_linetypes, prim_geom, prim_mask,
                 prim_group_ids=prim_group_ids,
             )
+            prefix_valid = getattr(self.view_encoder, "_last_prefix_valid", None)
+            if (
+                prefix_valid is not None
+                and getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm"
+            ):
+                # Mask covers prepend + prompt on the first decode step only.
+                prompt_len = int(prompt.shape[1])
+                prefix_attn_mask = build_prefix_lm_attn_mask(prefix_valid, seq_len=prompt_len)
         # Prepend condition only on first decode step so KV cache stays valid.
         return generate_with_prepend_kv_cache(
             self.cad_gpt.ar_decoder,
             prompt,
             seq_len=self.hparams.max_seq,
             prepend_embeds=prepend,
+            prefix_attn_mask=prefix_attn_mask,
             eos_token=MMTokenIndex.EOS.value,
             temperature=temperature,
             filter_logits_fn=partial(top_p, thres=threshold),

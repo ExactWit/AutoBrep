@@ -43,8 +43,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--prim-prefix-mode",
         default="direct",
-        choices=["direct", "compress"],
-        help="direct: 1 token per prim into prepend (no compressor); compress: P1-A style",
+        choices=["direct", "compress", "prefix_lm"],
+        help=(
+            "direct: 1 token/prim pad/trunc to M; compress: P1-A SoftPrefixCompressor; "
+            "prefix_lm: img+all prims as soft prefix with prefix-LM attn mask"
+        ),
     )
     p.add_argument(
         "--use-topo-sketch",

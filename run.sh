@@ -61,16 +61,16 @@ OFFICIAL_VAL_EPOCH_FRAC="${OFFICIAL_VAL_EPOCH_FRAC:-0.25}"
 NO_OFFICIAL_VAL="${NO_OFFICIAL_VAL:-0}"
 EVAL_PY="${EVAL_PY:-/data/hdd/datasets/eccv2026ws-cad-data/examples/min_eval/eval.py}"
 EVAL_GEN_BATCH="${EVAL_GEN_BATCH:-1}"
-GEN_RETRIES="${GEN_RETRIES:-1}"
+GEN_RETRIES="${GEN_RETRIES:-4}"
 GEN_RERANK="${GEN_RERANK:-0}"
 MAKE_SUBMISSION_ZIP="${MAKE_SUBMISSION_ZIP:-0}"
 # ECCV view-cond default: epoch schedule on small set (override with --max-steps)
 ECCV_MAX_EPOCHS="${ECCV_MAX_EPOCHS:-50}"
 USE_PRIM_SEQ_ENCODER="${USE_PRIM_SEQ_ENCODER:-}"
 PRIM_D_MODEL="${PRIM_D_MODEL:-512}"
-PRIM_N_LAYERS="${PRIM_N_LAYERS:-4}"
+PRIM_N_LAYERS="${PRIM_N_LAYERS:-0}"
 PRIM_MAX_SEQ="${PRIM_MAX_SEQ:-384}"
-PRIM_PREFIX_MODE="${PRIM_PREFIX_MODE:-direct}"
+PRIM_PREFIX_MODE="${PRIM_PREFIX_MODE:-prefix_lm}"
 USE_TOPO_SKETCH="${USE_TOPO_SKETCH:-0}"
 TOPO_SKETCH_MAX="${TOPO_SKETCH_MAX:-64}"
 TOPO_COUNT_WEIGHT="${TOPO_COUNT_WEIGHT:-0}"
@@ -223,10 +223,11 @@ case "${MODE}" in
       "no_official_val": false,
       "complexity": "from_condition",
       "use_prim_seq_encoder": 1,
-      "prim_prefix_mode": "direct",
-      "use_topo_sketch": 1,
+      "prim_n_layers": 0,
+      "prim_prefix_mode": "prefix_lm",
+      "use_topo_sketch": 0,
       "topo_sketch_max": 64,
-      "topo_count_weight": 0.1,
+      "topo_count_weight": 0,
       "cond_dropout": 0.1,
       "unfreeze_decoder_layers": 0,
       "use_decoder_cross_attn": 0,
@@ -242,7 +243,7 @@ case "${MODE}" in
       "temperature": 1.0,
       "top_p": 0.9,
       "gen_batch": 1,
-      "gen_retries": 1,
+      "gen_retries": 4,
       "gen_rerank": 0,
       "postprocess_analytic": 1
     },
@@ -271,7 +272,7 @@ case "${MODE}" in
       "temperature": 1.0,
       "top_p": 0.9,
       "gen_batch": 1,
-      "gen_retries": 1,
+      "gen_retries": 4,
       "gen_rerank": 0,
       "make_submission_zip": true
     }
