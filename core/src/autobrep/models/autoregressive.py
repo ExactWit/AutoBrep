@@ -1065,22 +1065,52 @@ class AutoBrepViewModel(AutoBrepModel):
         with torch.no_grad():
             surf_id, edge_id = self.encode_fsq_code(face_ncs, edge_ncs)
 
-        updated_token, loss_mask = [], []
+        use_prefix_lm = (
+            getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm"
+        )
+        seq_pieces, loss_masks, seq_lens = [], [], []
         for _token_, _surf_id_, _edge_id_ in zip(token, surf_id, edge_id):
             batch_data = self.copy_fsq_code(_token_, _surf_id_, _edge_id_)
-            updated_token.append(
-                torch.nn.functional.pad(
+            # Prefix-LM materializes a full (P+S)^2 mask and cannot use the cheap
+            # causal-flash path — pack to the real token length (per-batch max)
+            # instead of always padding to max_seq≈3000.
+            if use_prefix_lm:
+                seq_len_i = int(batch_data.numel())
+            else:
+                seq_len_i = self.pad_len
+                batch_data = torch.nn.functional.pad(
                     batch_data,
                     (0, self.pad_len - len(batch_data)),
                     value=-1,
                 )
-            )
-            mask = torch.zeros(self.pad_len).bool()
+            seq_pieces.append(batch_data)
+            seq_lens.append(seq_len_i)
+            mask = torch.zeros(seq_len_i, dtype=torch.bool, device=batch_data.device)
             mask[:4] = True  # ignore BOS + meta block
-            loss_mask.append(mask)
+            loss_masks.append(mask)
 
-        updated_token = torch.stack(updated_token).detach()
-        loss_mask = torch.stack(loss_mask).detach()
+        if use_prefix_lm:
+            max_len = max(seq_lens)
+            updated_token = torch.full(
+                (len(seq_pieces), max_len),
+                -1,
+                dtype=seq_pieces[0].dtype,
+                device=seq_pieces[0].device,
+            )
+            loss_mask = torch.ones(
+                len(seq_pieces), max_len, dtype=torch.bool, device=seq_pieces[0].device
+            )
+            for i, (piece, lm, sl) in enumerate(zip(seq_pieces, loss_masks, seq_lens)):
+                updated_token[i, :sl] = piece
+                loss_mask[i, :sl] = lm
+                # Keep pad positions ignored by CE.
+                loss_mask[i, sl:] = True
+        else:
+            updated_token = torch.stack(seq_pieces).detach()
+            loss_mask = torch.stack(loss_masks).detach()
+
+        updated_token = updated_token.detach()
+        loss_mask = loss_mask.detach()
 
         prepend = self.encode_views(
             images, prim_types, prim_linetypes, prim_geom, prim_mask,
@@ -1089,10 +1119,7 @@ class AutoBrepViewModel(AutoBrepModel):
         attn_mask = None
         causal = None
         prefix_valid = getattr(self.view_encoder, "_last_prefix_valid", None)
-        if (
-            prefix_valid is not None
-            and getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm"
-        ):
+        if use_prefix_lm and prefix_valid is not None:
             attn_mask = build_prefix_lm_attn_mask(
                 prefix_valid, seq_len=int(updated_token.shape[1])
             )
