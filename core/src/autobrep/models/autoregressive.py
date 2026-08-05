@@ -875,6 +875,7 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_n_layers: int = 4,
         prim_max_seq: int = 384,
         prim_prefix_mode: str = "compress",
+        prefix_lm_max_cad: int = 1024,
         use_topo_sketch: bool = False,
         topo_sketch_max: int = 64,
         topo_count_weight: float = 0.0,
@@ -1068,13 +1069,15 @@ class AutoBrepViewModel(AutoBrepModel):
         use_prefix_lm = (
             getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm"
         )
+        # Custom (P+S)^2 masks disable causal-flash; keep CAD length bounded so a
+        # single microbatch fits on 24GB (and avoid large accumulate_grad graphs).
+        prefix_lm_max_cad = int(getattr(self.hparams, "prefix_lm_max_cad", 1024) or 1024)
         seq_pieces, loss_masks, seq_lens = [], [], []
         for _token_, _surf_id_, _edge_id_ in zip(token, surf_id, edge_id):
             batch_data = self.copy_fsq_code(_token_, _surf_id_, _edge_id_)
-            # Prefix-LM materializes a full (P+S)^2 mask and cannot use the cheap
-            # causal-flash path — pack to the real token length (per-batch max)
-            # instead of always padding to max_seq≈3000.
             if use_prefix_lm:
+                if batch_data.numel() > prefix_lm_max_cad:
+                    batch_data = batch_data[:prefix_lm_max_cad]
                 seq_len_i = int(batch_data.numel())
             else:
                 seq_len_i = self.pad_len
@@ -1086,7 +1089,7 @@ class AutoBrepViewModel(AutoBrepModel):
             seq_pieces.append(batch_data)
             seq_lens.append(seq_len_i)
             mask = torch.zeros(seq_len_i, dtype=torch.bool, device=batch_data.device)
-            mask[:4] = True  # ignore BOS + meta block
+            mask[: min(4, seq_len_i)] = True  # ignore BOS + meta block
             loss_masks.append(mask)
 
         if use_prefix_lm:
