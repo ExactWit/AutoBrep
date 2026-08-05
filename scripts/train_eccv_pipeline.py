@@ -438,9 +438,24 @@ def main() -> int:
         save_last=True,
         every_n_train_steps=None,
     )
+
+    # Lightning 2.2+ requires unique Callback.state_key when two ModelCheckpoints
+    # share the same monitor/mode schedule (otherwise Trainer refuses to start).
+    class _AliasModelCheckpoint(ModelCheckpoint):
+        @property
+        def state_key(self) -> str:
+            return self._generate_state_key(
+                monitor=self.monitor,
+                mode=self.mode,
+                every_n_train_steps=self._every_n_train_steps,
+                every_n_epochs=self._every_n_epochs,
+                train_time_interval=self._train_time_interval,
+                filename=self.filename,
+            )
+
     # Keep a stable best.ckpt alias: exp_launcher's resume/test/infer modes
     # auto-pick checkpoints/best.ckpt before last.ckpt.
-    best_alias_cb = ModelCheckpoint(
+    best_alias_cb = _AliasModelCheckpoint(
         dirpath=str(ckpt_dir),
         filename="best",
         monitor="val_loss",
