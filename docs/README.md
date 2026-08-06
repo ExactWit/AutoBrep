@@ -15,6 +15,7 @@
 | `feat/p1-decoder-cross-attn` | P1-B cross-attn 代码源 | entry `eccv-3view-p1b` |
 | `feat/cond-mm-stage-a` | **MM Stage A 主线**：多模态 + xattn + surf head | entry `eccv-3view-mm-a` |
 | `eccv-p2` | P2 冲榜开关位 | entry `eccv-3view-p2` |
+| `feat/classical-orthographic-wm` | 非 DL 三视图→B-rep 经典 baseline | entry `eccv-classical-wm` |
 
 ## 文档目录
 
@@ -22,6 +23,7 @@
 
 | 文档 | 内容 | 所指分支 |
 |------|------|----------|
+| [classical_orthographic_wm.md](./classical_orthographic_wm.md) | **传统方法** Wesley–Markowsky 实现与局限 | 实现 `feat/classical-orthographic-wm`；文档归档 `main` |
 | [eccv_upgrade_p0_p1_p2.md](./eccv_upgrade_p0_p1_p2.md) | P0→P1→P2 路线、开关、TechDraw 锁定管线 | `eccv-p0` / `feat/p1-*` / `eccv-p2` |
 | [eccv_pipeline_completeness.md](./eccv_pipeline_completeness.md) | 管线完备性与优先级 | ECCV tip 族 |
 | [eccv_sft.md](./eccv_sft.md) | ECCV SFT 说明 | ECCV tip 族 |
@@ -56,5 +58,3 @@
 ## Gen 失败一句话
 
 R1（348 test，gen=50%）失败里 **rebuild≈76% / decode≈24%**；细到「引用/拟合/缝合」尚未打标。详见 [GEN_FAIL_TAXONOMY.md](./eccv_stage_reports/GEN_FAIL_TAXONOMY.md)。
-
-- [Classical orthographic WM baseline](classical_orthographic_wm.md)
