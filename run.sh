@@ -75,10 +75,12 @@ ENABLE_AUX_SURF_TYPE="${ENABLE_AUX_SURF_TYPE:-0}"
 AUX_SURF_TYPE_WEIGHT="${AUX_SURF_TYPE_WEIGHT:-0.1}"
 FSQ_UPGRADE="${FSQ_UPGRADE:-0}"
 POSTPROCESS_ANALYTIC="${POSTPROCESS_ANALYTIC:-1}"
+CLASSICAL_BASELINE="${CLASSICAL_BASELINE:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --exp-dir) EXP_DIR_ARG="$2"; shift 2 ;;
+    --classical-baseline) CLASSICAL_BASELINE="$2"; shift 2 ;;
     --output-dir) OUTPUT_DIR_ARG="$2"; shift 2 ;;
     --data-dir|--dataset-dir) DATA_DIR_ARG="$2"; shift 2 ;;
     --datasplit) DATASPLIT_ARG="$2"; shift 2 ;;
@@ -208,7 +210,8 @@ case "${MODE}" in
       "use_decoder_cross_attn": 0,
       "enable_aux_view_bbox": 0,
       "enable_aux_surf_type": 0,
-      "fsq_upgrade": 0
+      "fsq_upgrade": 0,
+      "classical_baseline": 0
     },
     "test": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
@@ -217,7 +220,8 @@ case "${MODE}" in
       "temperature": 1.0,
       "top_p": 0.9,
       "gen_batch": 1,
-      "postprocess_analytic": 1
+      "postprocess_analytic": 1,
+      "classical_baseline": 0
     },
     "infer": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
@@ -288,7 +292,8 @@ case "${MODE}" in
       "--aux-view-bbox-weight",
       "--enable-aux-surf-type",
       "--aux-surf-type-weight",
-      "--fsq-upgrade"
+      "--fsq-upgrade",
+      "--classical-baseline"
     ],
     "test": [
       "--weight-folder",
@@ -301,7 +306,9 @@ case "${MODE}" in
       "--top-p",
       "--gen-batch",
       "--eval-py",
-      "--postprocess-analytic"
+      "--postprocess-analytic",
+      "--classical-baseline",
+      "--limit-samples"
     ],
     "infer": [
       "--weight-folder",
@@ -433,6 +440,11 @@ JSON
     if [[ -z "${EXP_DIR_ARG}" ]]; then
       echo "[run.sh] ERROR: --exp-dir is required for train" >&2
       exit 1
+    fi
+    if [[ "${CLASSICAL_BASELINE}" == "1" || "${CLASSICAL_BASELINE}" == "true" ]]; then
+      mkdir -p "${EXP_DIR_ARG}/checkpoints" "${EXP_DIR_ARG}/metrics"
+      echo "[run.sh] classical_baseline host stub → ${EXP_DIR_ARG}" >&2
+      exec python -u "${REPO_DIR}/scripts/classical_host_train.py" --exp-dir "${EXP_DIR_ARG}"
     fi
     DATASET="${DATASET_ARG:-eccv2026ws-cad-data}"
     mkdir -p "${EXP_DIR_ARG}/checkpoints" "${EXP_DIR_ARG}/metrics" "${EXP_DIR_ARG}/tensorboard"
@@ -611,6 +623,24 @@ JSON
     DATA_ROOT="${DATA_DIR_ARG:-/data/hdd/datasets/eccv2026ws-cad-data}"
     OUT="${OUTPUT_DIR_ARG:-${EXP_DIR_ARG}}"
     mkdir -p "${EXP_DIR_ARG}/metrics" "${OUT}"
+    if [[ "${CLASSICAL_BASELINE}" == "1" || "${CLASSICAL_BASELINE}" == "true" ]]; then
+      EVAL_ARGS=(
+        --exp-dir "${EXP_DIR_ARG}"
+        --output-dir "${OUT}"
+        --data-dir "${DATA_ROOT}"
+        --split test
+        --eval-py "${EVAL_PY}"
+        --min-score 0.05
+      )
+      if [[ -n "${DATASPLIT_ARG}" ]]; then
+        EVAL_ARGS+=(--datasplit "${DATASPLIT_ARG}")
+      fi
+      if [[ -n "${LIMIT_SAMPLES}" && "${LIMIT_SAMPLES}" != "0" ]]; then
+        EVAL_ARGS+=(--limit-samples "${LIMIT_SAMPLES}")
+      fi
+      echo "[run.sh] classical_wm official test → ${EXP_DIR_ARG}/metrics/test.json" >&2
+      exec python -u "${REPO_DIR}/scripts/eval_classical_orthographic.py" "${EVAL_ARGS[@]}"
+    fi
     EVAL_ARGS=(
       --exp-dir "${EXP_DIR_ARG}"
       --output-dir "${OUT}"
