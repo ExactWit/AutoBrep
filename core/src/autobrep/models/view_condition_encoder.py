@@ -160,7 +160,43 @@ class ViewConditionEncoder(nn.Module):
             nn.Linear(hidden, hidden),
         )
 
-        if self.use_prim_seq_encoder:
+        if self.use_prim_seq_encoder and self.prim_prefix_mode == "prefix_lm":
+            # Equal-status condition tokens: embed (+MLP) → AR dim; no compressor /
+            # external Transformer. Abstraction happens inside the shared AR stack.
+            self.prim_encoder = PrimTransformerEncoder(
+                d_model=dim,
+                n_layers=0,
+                n_heads=max(4, dim // 64),
+                max_seq=prim_max_seq,
+                geom_bins=prim_geom_bins,
+                num_views=num_td_views,
+                dropout=dropout,
+                out_dim=dim,
+            )
+            self.prim_mlp = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(dim, dim),
+            )
+            self.img_to_ar = nn.Sequential(
+                nn.Linear(512, dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(dim, dim),
+            )
+            self.prim_compressor = None
+            self.fuse_latents = None
+            self.fuse_cross_attn = None
+            self.fuse_ff = None
+            self.techdraw_encoder = None
+            self.td_view_embed = None
+            self.techdraw_token = None
+            self.latents = None
+            self.cross_attn = None
+            self.ff = None
+        elif self.use_prim_seq_encoder:
             # Align prim encoder out_dim with hidden so img+prim share mem space.
             self.prim_encoder = PrimTransformerEncoder(
                 d_model=prim_d_model,
@@ -172,6 +208,8 @@ class ViewConditionEncoder(nn.Module):
                 dropout=dropout,
                 out_dim=hidden,
             )
+            self.prim_mlp = None
+            self.img_to_ar = None
             self.prim_compressor = SoftPrefixCompressor(
                 d_model=hidden,
                 num_latents=num_latents,
@@ -202,6 +240,8 @@ class ViewConditionEncoder(nn.Module):
             self.ff = None
         else:
             self.prim_encoder = None
+            self.prim_mlp = None
+            self.img_to_ar = None
             self.prim_compressor = None
             self.fuse_latents = None
             self.fuse_cross_attn = None
@@ -286,6 +326,9 @@ class ViewConditionEncoder(nn.Module):
         assert v == self.num_image_views, f"expected {self.num_image_views} image views, got {v}"
         flat = images.reshape(b * v, c, h, w)
         feats = self.backbone(flat.float()).to(dtype=images.dtype)
+        if self.img_to_ar is not None:
+            # prefix_lm: map ResNet feats straight to AR dim
+            return self.img_to_ar(feats).reshape(b, v, -1), images
         return self.img_proj(feats).reshape(b, v, -1), images
 
     def forward(
@@ -369,12 +412,15 @@ class ViewConditionEncoder(nn.Module):
                     )
                 self._last_prefix_valid = None
             elif self.prim_prefix_mode == "prefix_lm":
-                # Keep image + all prim tokens (no compressor). Soft prefix is
-                # later attended inside AR with an explicit prefix-LM mask.
-                hidden = torch.cat([img_tokens, prim_seq], dim=1)  # (B, 3+L, H)
-                img_mask = torch.ones(b, self.num_image_views, dtype=torch.bool, device=images.device)
+                # Embed(+MLP) prims and image tokens already in AR dim; shared
+                # AR stack + prefix-LM mask does the abstraction (equal status).
+                if self.prim_mlp is not None:
+                    prim_seq = self.prim_mlp(prim_seq)
+                hidden = torch.cat([img_tokens, prim_seq], dim=1)  # (B, 3+L, dim)
+                img_mask = torch.ones(
+                    b, self.num_image_views, dtype=torch.bool, device=images.device
+                )
                 cond_token_mask = torch.cat([img_mask, prim_seq_mask], dim=1)
-                # Stash validity for bos/eos wrappers added below.
                 self._last_prefix_valid = cond_token_mask
             else:
                 # Compress prim seq → M; fuse with image tokens via another cross-attn
@@ -409,7 +455,11 @@ class ViewConditionEncoder(nn.Module):
             hidden = latents + attn_out
             hidden = hidden + self.ff(hidden)
 
-        tokens = self.proj(hidden)
+        if self.prim_prefix_mode == "prefix_lm":
+            # Already AR-dim; skip shared hidden→dim proj used by compress/direct.
+            tokens = hidden
+        else:
+            tokens = self.proj(hidden)
         bos = self.bos_view.expand(b, -1, -1)
         eos = self.eos_view.expand(b, -1, -1)
         prefix = torch.cat([bos, tokens, eos], dim=1)

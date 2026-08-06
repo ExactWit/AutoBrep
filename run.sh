@@ -69,7 +69,7 @@ ECCV_MAX_EPOCHS="${ECCV_MAX_EPOCHS:-50}"
 USE_PRIM_SEQ_ENCODER="${USE_PRIM_SEQ_ENCODER:-}"
 PRIM_D_MODEL="${PRIM_D_MODEL:-512}"
 PRIM_N_LAYERS="${PRIM_N_LAYERS:-0}"
-PRIM_MAX_SEQ="${PRIM_MAX_SEQ:-192}"
+PRIM_MAX_SEQ="${PRIM_MAX_SEQ:-384}"
 PRIM_PREFIX_MODE="${PRIM_PREFIX_MODE:-prefix_lm}"
 USE_TOPO_SKETCH="${USE_TOPO_SKETCH:-0}"
 TOPO_SKETCH_MAX="${TOPO_SKETCH_MAX:-64}"
@@ -224,7 +224,7 @@ case "${MODE}" in
       "complexity": "from_condition",
       "use_prim_seq_encoder": 1,
       "prim_n_layers": 0,
-      "prim_max_seq": 192,
+      "prim_max_seq": 384,
       "prim_prefix_mode": "prefix_lm",
       "use_topo_sketch": 0,
       "topo_sketch_max": 64,

@@ -9,9 +9,8 @@ Policy:
 1. Step 0: forward with ``prepend_embeds`` (condition + prompt).
 2. Later steps: feed only the newest token(s); do **not** re-pass prepend.
 3. Always pass ``input_not_include_cache=True`` when using the KV cache.
-4. Optional ``prefix_attn_mask`` (prefix-LM) applies on step 0 only with
-   ``causal=False``; later steps use KV cache under default causal (x_transformers
-   forbids custom ``attn_mask`` together with cache).
+4. Optional ``prefix_valid`` activates flex prefix-LM masking on step 0 only
+   (``causal=False``); later steps use KV cache under default causal.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ def generate_with_prepend_kv_cache(
     *,
     seq_len: int,
     prepend_embeds: Optional[Tensor] = None,
-    prefix_attn_mask: Optional[Tensor] = None,
+    prefix_valid: Optional[Tensor] = None,
     eos_token: Optional[int] = None,
     temperature: float = 1.0,
     filter_logits_fn: Optional[Callable] = None,
@@ -83,20 +82,35 @@ def generate_with_prepend_kv_cache(
                     "prepend_embeds": prepend_embeds,
                     "input_not_include_cache": True,
                 }
-                if prefix_attn_mask is not None:
-                    step_kwargs["attn_mask"] = prefix_attn_mask
-                    step_kwargs["causal"] = False
+                if prefix_valid is not None:
+                    from autobrep.models.prefix_lm_flex import prefix_lm_flex_attention
+
+                    # Flex mask covers prepend + prompt; disable default causal.
+                    with prefix_lm_flex_attention(prefix_valid, seq_len=prompt_len):
+                        step_kwargs["causal"] = False
+                        logits, new_cache = net(
+                            x,
+                            return_intermediates=True,
+                            cache=cache,
+                            **step_kwargs,
+                        )
+                else:
+                    logits, new_cache = net(
+                        x,
+                        return_intermediates=True,
+                        cache=cache,
+                        **step_kwargs,
+                    )
             else:
                 # Newest token only; cache already holds condition + past tokens.
                 x = out[:, -1:]
                 step_kwargs = {"input_not_include_cache": True}
-
-            logits, new_cache = net(
-                x,
-                return_intermediates=True,
-                cache=cache,
-                **step_kwargs,
-            )
+                logits, new_cache = net(
+                    x,
+                    return_intermediates=True,
+                    cache=cache,
+                    **step_kwargs,
+                )
 
             if can_cache:
                 cache = new_cache

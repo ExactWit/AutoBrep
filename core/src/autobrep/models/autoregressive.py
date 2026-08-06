@@ -15,7 +15,7 @@ from autobrep.models.autoregressive_samplers import TopP
 from autobrep.models.dataclass import BrepGenCAD, CheckpointPaths
 from autobrep.models.generate_prepend import generate_with_prepend_kv_cache
 from autobrep.models.point_cloud_encoder import PointCloudConditionEncoder
-from autobrep.models.prefix_lm_mask import build_prefix_lm_attn_mask
+from autobrep.models.prefix_lm_flex import ensure_attend_patched, prefix_lm_flex_attention
 from autobrep.models.view_condition_encoder import ViewConditionEncoder
 from autobrep.models.vaes import EdgeFSQVAE, SurfaceFSQVAE
 from autobrep.network import XTransformer
@@ -875,7 +875,6 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_n_layers: int = 4,
         prim_max_seq: int = 384,
         prim_prefix_mode: str = "compress",
-        prefix_lm_max_cad: int = 1024,
         use_topo_sketch: bool = False,
         topo_sketch_max: int = 64,
         topo_count_weight: float = 0.0,
@@ -922,6 +921,9 @@ class AutoBrepViewModel(AutoBrepModel):
 
         if ar_ckpt and not inference_mode:
             self.load_pretrained_ar(ar_ckpt)
+
+        if getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm":
+            ensure_attend_patched()
 
         if freeze_backbone:
             self.cad_gpt.requires_grad_(False)
@@ -1069,15 +1071,12 @@ class AutoBrepViewModel(AutoBrepModel):
         use_prefix_lm = (
             getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm"
         )
-        # Custom (P+S)^2 masks disable causal-flash; keep CAD length bounded so a
-        # single microbatch fits on 24GB (and avoid large accumulate_grad graphs).
-        prefix_lm_max_cad = int(getattr(self.hparams, "prefix_lm_max_cad", 1024) or 1024)
+        # Pack to the batch-max *real* CAD length (no artificial truncate). Dataset
+        # already caps TechDraw at MAX_PRIMS_PER_VIEW; prim_max_seq should cover that.
         seq_pieces, loss_masks, seq_lens = [], [], []
         for _token_, _surf_id_, _edge_id_ in zip(token, surf_id, edge_id):
             batch_data = self.copy_fsq_code(_token_, _surf_id_, _edge_id_)
             if use_prefix_lm:
-                if batch_data.numel() > prefix_lm_max_cad:
-                    batch_data = batch_data[:prefix_lm_max_cad]
                 seq_len_i = int(batch_data.numel())
             else:
                 seq_len_i = self.pad_len
@@ -1106,11 +1105,12 @@ class AutoBrepViewModel(AutoBrepModel):
             for i, (piece, lm, sl) in enumerate(zip(seq_pieces, loss_masks, seq_lens)):
                 updated_token[i, :sl] = piece
                 loss_mask[i, :sl] = lm
-                # Keep pad positions ignored by CE.
                 loss_mask[i, sl:] = True
+            cad_valid = updated_token.ne(-1)
         else:
             updated_token = torch.stack(seq_pieces).detach()
             loss_mask = torch.stack(loss_masks).detach()
+            cad_valid = None
 
         updated_token = updated_token.detach()
         loss_mask = loss_mask.detach()
@@ -1119,22 +1119,28 @@ class AutoBrepViewModel(AutoBrepModel):
             images, prim_types, prim_linetypes, prim_geom, prim_mask,
             prim_group_ids=prim_group_ids,
         )
-        attn_mask = None
-        causal = None
         prefix_valid = getattr(self.view_encoder, "_last_prefix_valid", None)
         if use_prefix_lm and prefix_valid is not None:
-            attn_mask = build_prefix_lm_attn_mask(
-                prefix_valid, seq_len=int(updated_token.shape[1])
+            # Flex BlockMask (no dense T² bool). causal=False: pattern is in flex.
+            with prefix_lm_flex_attention(
+                prefix_valid,
+                seq_len=int(updated_token.shape[1]),
+                cad_valid=cad_valid,
+            ):
+                loss = self.cad_gpt(
+                    updated_token,
+                    cond_mask=loss_mask,
+                    attn_mask=None,
+                    prepend_embeds=prepend,
+                    causal=False,
+                )
+        else:
+            loss = self.cad_gpt(
+                updated_token,
+                cond_mask=loss_mask,
+                attn_mask=None,
+                prepend_embeds=prepend,
             )
-            # Full pattern is in attn_mask; disable default causal so prefix is bidirectional.
-            causal = False
-        loss = self.cad_gpt(
-            updated_token,
-            cond_mask=loss_mask,
-            attn_mask=attn_mask,
-            prepend_embeds=prepend,
-            causal=causal,
-        )
         if self.topo_count_weight > 0 and self.view_encoder.topo_count_head is not None:
             sketch_pack = self.view_encoder.get_topo_sketch()
             if sketch_pack is not None and "num_faces" in batch and "num_edges" in batch:
@@ -1179,27 +1185,21 @@ class AutoBrepViewModel(AutoBrepModel):
         prim_group_ids=None,
     ):
         prepend = None
-        prefix_attn_mask = None
+        prefix_valid = None
         if images is not None:
             prepend = self.encode_views(
                 images, prim_types, prim_linetypes, prim_geom, prim_mask,
                 prim_group_ids=prim_group_ids,
             )
-            prefix_valid = getattr(self.view_encoder, "_last_prefix_valid", None)
-            if (
-                prefix_valid is not None
-                and getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm"
-            ):
-                # Mask covers prepend + prompt on the first decode step only.
-                prompt_len = int(prompt.shape[1])
-                prefix_attn_mask = build_prefix_lm_attn_mask(prefix_valid, seq_len=prompt_len)
+            if getattr(self.view_encoder, "prim_prefix_mode", "") == "prefix_lm":
+                prefix_valid = getattr(self.view_encoder, "_last_prefix_valid", None)
         # Prepend condition only on first decode step so KV cache stays valid.
         return generate_with_prepend_kv_cache(
             self.cad_gpt.ar_decoder,
             prompt,
             seq_len=self.hparams.max_seq,
             prepend_embeds=prepend,
-            prefix_attn_mask=prefix_attn_mask,
+            prefix_valid=prefix_valid,
             eos_token=MMTokenIndex.EOS.value,
             temperature=temperature,
             filter_logits_fn=partial(top_p, thres=threshold),
