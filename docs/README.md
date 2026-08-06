@@ -56,3 +56,5 @@
 ## Gen 失败一句话
 
 R1（348 test，gen=50%）失败里 **rebuild≈76% / decode≈24%**；细到「引用/拟合/缝合」尚未打标。详见 [GEN_FAIL_TAXONOMY.md](./eccv_stage_reports/GEN_FAIL_TAXONOMY.md)。
+
+- [Classical orthographic WM baseline](classical_orthographic_wm.md)
