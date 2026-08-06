@@ -21,6 +21,15 @@ _CTX: ContextVar[Optional["PrefixLMFlexState"]] = ContextVar(
 )
 _PATCHED = False
 _ORIG_FLASH_ATTN = None
+_COMPILED_FLEX = None
+
+
+def _get_compiled_flex():
+    """Lazy ``torch.compile(flex_attention)`` — uncompiled path materializes T² scores."""
+    global _COMPILED_FLEX
+    if _COMPILED_FLEX is None:
+        _COMPILED_FLEX = torch.compile(flex_attention)
+    return _COMPILED_FLEX
 
 
 @dataclass
@@ -107,11 +116,14 @@ def ensure_attend_patched() -> None:
     ):
         ctx = _CTX.get()
         if ctx is not None:
+            # Match Attend.flash_attn contract: (out, Intermediates)
+            from x_transformers.attend import Intermediates
+
             # q/k/v: (batch, heads, seq, dim)
-            out = flex_attention(q, k, v, block_mask=ctx.block_mask)
+            out = _get_compiled_flex()(q, k, v, block_mask=ctx.block_mask)
             if self.training and float(self.dropout) > 0:
                 out = F.dropout(out, p=float(self.dropout))
-            return out
+            return out, Intermediates()
         return _ORIG_FLASH_ATTN(
             self,
             q,
