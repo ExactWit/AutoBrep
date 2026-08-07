@@ -76,11 +76,15 @@ AUX_SURF_TYPE_WEIGHT="${AUX_SURF_TYPE_WEIGHT:-0.1}"
 FSQ_UPGRADE="${FSQ_UPGRADE:-0}"
 POSTPROCESS_ANALYTIC="${POSTPROCESS_ANALYTIC:-1}"
 CLASSICAL_BASELINE="${CLASSICAL_BASELINE:-0}"
+SAMPLE_TIMEOUT="${SAMPLE_TIMEOUT:-120}"
+RESUME_PRED="${RESUME_PRED:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --exp-dir) EXP_DIR_ARG="$2"; shift 2 ;;
     --classical-baseline) CLASSICAL_BASELINE="$2"; shift 2 ;;
+    --sample-timeout) SAMPLE_TIMEOUT="$2"; shift 2 ;;
+    --resume-pred) RESUME_PRED="$2"; shift 2 ;;
     --output-dir) OUTPUT_DIR_ARG="$2"; shift 2 ;;
     --data-dir|--dataset-dir) DATA_DIR_ARG="$2"; shift 2 ;;
     --datasplit) DATASPLIT_ARG="$2"; shift 2 ;;
@@ -221,7 +225,8 @@ case "${MODE}" in
       "top_p": 0.9,
       "gen_batch": 1,
       "postprocess_analytic": 1,
-      "classical_baseline": 0
+      "classical_baseline": 0,
+      "sample_timeout": 120
     },
     "infer": {
       "weight_folder": "/data/hdd/outputs/AutoBrep",
@@ -308,7 +313,9 @@ case "${MODE}" in
       "--eval-py",
       "--postprocess-analytic",
       "--classical-baseline",
-      "--limit-samples"
+      "--limit-samples",
+      "--sample-timeout",
+      "--resume-pred"
     ],
     "infer": [
       "--weight-folder",
@@ -631,12 +638,16 @@ JSON
         --split test
         --eval-py "${EVAL_PY}"
         --min-score 0.05
+        --sample-timeout "${SAMPLE_TIMEOUT}"
       )
       if [[ -n "${DATASPLIT_ARG}" ]]; then
         EVAL_ARGS+=(--datasplit "${DATASPLIT_ARG}")
       fi
       if [[ -n "${LIMIT_SAMPLES}" && "${LIMIT_SAMPLES}" != "0" ]]; then
         EVAL_ARGS+=(--limit-samples "${LIMIT_SAMPLES}")
+      fi
+      if [[ -n "${RESUME_PRED}" ]]; then
+        EVAL_ARGS+=(--resume-pred "${RESUME_PRED}")
       fi
       echo "[run.sh] classical_wm official test → ${EXP_DIR_ARG}/metrics/test.json" >&2
       exec python -u "${REPO_DIR}/scripts/eval_classical_orthographic.py" "${EVAL_ARGS[@]}"

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,107 @@ def _load_path_map(parquet_root: Path, split: str) -> dict[str, dict[str, str]]:
     return out
 
 
+def _worker_reconstruct(payload: dict[str, Any], conn) -> None:
+    """Child process target — isolate OCC / combinatorial hangs."""
+    try:
+        res = reconstruct_from_techdraw_paths(
+            payload["data_dir"],
+            dxf_rel=payload["dxf_rel"],
+            svg_rel=payload["svg_rel"],
+            out_step=payload["out_step"],
+            tol=payload["tol"],
+            min_score=float(payload["min_score"]),
+        )
+        conn.send(
+            {
+                "ok": bool(res.ok),
+                "error": res.error,
+                "n_verts": res.n_verts,
+                "n_edges": res.n_edges,
+                "n_faces": res.n_faces,
+                "score": res.score,
+                "method": res.method,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        conn.send({"ok": False, "error": str(exc)})
+    finally:
+        conn.close()
+
+
+def _reconstruct_with_timeout(
+    *,
+    data_dir: Path,
+    dxf_rel: str,
+    svg_rel: str,
+    out_step: Path,
+    tol: float | None,
+    min_score: float,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    if timeout_sec <= 0:
+        res = reconstruct_from_techdraw_paths(
+            data_dir,
+            dxf_rel=dxf_rel,
+            svg_rel=svg_rel,
+            out_step=out_step,
+            tol=tol,
+            min_score=min_score,
+        )
+        return {
+            "ok": bool(res.ok and out_step.is_file()),
+            "error": res.error,
+            "n_verts": res.n_verts,
+            "n_edges": res.n_edges,
+            "n_faces": res.n_faces,
+            "score": res.score,
+            "method": res.method,
+        }
+
+    ctx = mp.get_context("spawn")
+    parent, child = ctx.Pipe(duplex=False)
+    proc = ctx.Process(
+        target=_worker_reconstruct,
+        args=(
+            {
+                "data_dir": str(data_dir),
+                "dxf_rel": dxf_rel,
+                "svg_rel": svg_rel,
+                "out_step": str(out_step),
+                "tol": tol,
+                "min_score": min_score,
+            },
+            child,
+        ),
+    )
+    proc.start()
+    child.close()
+    proc.join(timeout_sec)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(5)
+        out_step.unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "error": f"timeout>{timeout_sec:.0f}s",
+            "n_verts": 0,
+            "n_edges": 0,
+            "n_faces": 0,
+            "score": 0.0,
+            "method": "",
+        }
+    if parent.poll():
+        status = parent.recv()
+    else:
+        status = {"ok": False, "error": f"worker_exit={proc.exitcode}"}
+    parent.close()
+    status["ok"] = bool(status.get("ok") and out_step.is_file())
+    return status
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Classical orthographic WM official test")
     p.add_argument("--exp-dir", required=True)
@@ -54,9 +157,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--limit-samples", type=int, default=-1)
     p.add_argument("--tol", type=float, default=-1.0)
     p.add_argument("--min-score", type=float, default=0.05)
+    p.add_argument(
+        "--sample-timeout",
+        type=float,
+        default=120.0,
+        help="Per-sample wall timeout seconds (0=disable). Default 120.",
+    )
+    p.add_argument(
+        "--resume-pred",
+        default="",
+        help="Copy existing STEP preds from this dir then skip those sample ids",
+    )
     p.add_argument("--make-submission-zip", type=_parse_bool, default=False)
     return p.parse_args()
-
 
 def main() -> None:
     args = parse_args()
@@ -84,49 +197,76 @@ def main() -> None:
     path_map = _load_path_map(parquet_root, str(args.split))
     work = metrics_dir / f"classical_wm_{args.split}"
     gt_dir, pred_dir, ok_ids = prepare_gt_pred_dirs(data_dir, ids, work)
+
+    resume_pred = Path(args.resume_pred) if str(args.resume_pred).strip() else None
+    resumed = 0
+    if resume_pred is not None and resume_pred.is_dir():
+        for src in resume_pred.glob("*.step"):
+            dst = pred_dir / src.name
+            if not dst.is_file():
+                shutil.copy2(src, dst)
+                resumed += 1
+        print(
+            f"[classical_wm] resumed {resumed} STEP(s) from {resume_pred}",
+            flush=True,
+        )
+
     print(
         f"[classical_wm] split={args.split} n_ids={len(ids)} with_gt={len(ok_ids)} "
-        f"→ {work}",
+        f"timeout={float(args.sample_timeout):.0f}s → {work}",
         flush=True,
     )
 
     gen_log: list[dict[str, Any]] = []
     t0 = time.time()
     tol = None if float(args.tol) < 0 else float(args.tol)
+    timeout_sec = float(args.sample_timeout)
     for i, sid in enumerate(ok_ids):
         row = path_map.get(str(sid), {})
         out_step = pred_dir / f"{sid}.step"
-        try:
-            res = reconstruct_from_techdraw_paths(
-                data_dir,
-                dxf_rel=row.get("techdraw_dxf_path", ""),
-                svg_rel=row.get("techdraw_svg_path", ""),
-                out_step=out_step,
-                tol=tol,
-                min_score=float(args.min_score),
-            )
+        if out_step.is_file() and out_step.stat().st_size > 0:
             status = {
                 "sample_id": sid,
-                "ok": bool(res.ok and out_step.is_file()),
-                "error": res.error,
-                "n_verts": res.n_verts,
-                "n_edges": res.n_edges,
-                "n_faces": res.n_faces,
-                "score": res.score,
-                "method": res.method,
+                "ok": True,
+                "error": "",
+                "n_verts": 0,
+                "n_edges": 0,
+                "n_faces": 0,
+                "score": 0.0,
+                "method": "resumed",
             }
-        except Exception as exc:  # noqa: BLE001
-            status = {"sample_id": sid, "ok": False, "error": str(exc)}
-            out_step.unlink(missing_ok=True)
+        else:
+            try:
+                status = _reconstruct_with_timeout(
+                    data_dir=data_dir,
+                    dxf_rel=row.get("techdraw_dxf_path", ""),
+                    svg_rel=row.get("techdraw_svg_path", ""),
+                    out_step=out_step,
+                    tol=tol,
+                    min_score=float(args.min_score),
+                    timeout_sec=timeout_sec,
+                )
+                status = {
+                    "sample_id": sid,
+                    "ok": bool(status.get("ok")),
+                    "error": status.get("error", ""),
+                    "n_verts": status.get("n_verts", 0),
+                    "n_edges": status.get("n_edges", 0),
+                    "n_faces": status.get("n_faces", 0),
+                    "score": status.get("score", 0.0),
+                    "method": status.get("method", ""),
+                }
+            except Exception as exc:  # noqa: BLE001
+                status = {"sample_id": sid, "ok": False, "error": str(exc)}
+                out_step.unlink(missing_ok=True)
         gen_log.append(status)
-        if (i + 1) % 10 == 0 or i == 0 or not status.get("ok"):
-            print(
-                f"[classical_wm] [{i+1}/{len(ok_ids)}] {sid}: ok={status.get('ok')} "
-                f"method={status.get('method','')} score={status.get('score',0):.3f} "
-                f"err={status.get('error','')}",
-                flush=True,
-            )
-
+        # Log every sample so hangs are visible immediately.
+        print(
+            f"[classical_wm] [{i+1}/{len(ok_ids)}] {sid}: ok={status.get('ok')} "
+            f"method={status.get('method','')} score={float(status.get('score') or 0):.3f} "
+            f"err={status.get('error','')}",
+            flush=True,
+        )
     n_ok = sum(1 for g in gen_log if g.get("ok"))
     for sid in list(ok_ids):
         if not (pred_dir / f"{sid}.step").is_file():
